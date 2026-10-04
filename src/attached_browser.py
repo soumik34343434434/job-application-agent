@@ -113,9 +113,17 @@ class AttachedChrome:
             "() => JSON.stringify({url: location.href, title: document.title, "
             "text: (document.body?.innerText || '').slice(0, 12000)})"
         )
+        value = raw.strip()
         try:
-            return json.loads(raw)
-        except json.JSONDecodeError as exc:
+            parsed = json.loads(value)
+            # playwright-cli --raw can return a JSON string containing the
+            # evaluated JSON payload. Decode one additional layer when needed.
+            if isinstance(parsed, str):
+                parsed = json.loads(parsed)
+            if not isinstance(parsed, dict):
+                raise ValueError(f"Expected object, got {type(parsed).__name__}")
+            return parsed
+        except (json.JSONDecodeError, ValueError, TypeError) as exc:
             raise RuntimeError(f"Could not parse browser state: {raw}") from exc
 
     def click_google_sign_in(self) -> bool:
