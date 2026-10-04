@@ -1,0 +1,9 @@
+.venv/
+.env
+.env.*
+__pycache__/
+*.pyc
+.pytest_cache/
+browser_profile/
+data/*.db
+data/*.sqlite

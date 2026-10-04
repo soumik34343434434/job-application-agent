@@ -1,0 +1,46 @@
+{
+  "name": "Soumik Paul",
+  "headline": "Cybersecurity Analyst",
+  "location": "Kolkata, India",
+  "phone": "+91-8585899504",
+  "email": "soumikp922@gmail.com",
+  "linkedin": "https://www.linkedin.com/in/soumik-paul-06629a155",
+  "education": [{"degree": "B.Tech", "graduation_year": 2023}],
+  "experience": [
+    {"company": "Cognizant Technology Solutions", "title": "Cybersecurity Analyst", "start": "2024-09", "end": "present"},
+    {"company": "Cognizant Technology Solutions", "title": "Security Operations & Vulnerability Management", "start": "2026-02", "end": "present"},
+    {"company": "Cognizant Technology Solutions", "title": "Identity & Access Management (Okta)", "start": "2024-09", "end": "2026-01"}
+  ],
+  "skills": {
+    "security_operations": ["Microsoft Defender", "Carbon Black", "ThreatLocker", "incident investigation"],
+    "email_security": ["Mimecast", "phishing investigations", "phishing reporting"],
+    "cloud_security": ["Netskope", "Cloudflare"],
+    "vulnerability_management": ["Qualys VM", "CMDB validation", "agent troubleshooting"],
+    "iam": ["Okta", "JML", "SSO", "MFA"],
+    "microsoft": ["Microsoft 365 Admin Center", "Microsoft Defender Portal", "Windows Administration"],
+    "itsm": ["ServiceNow", "INC", "RITM"]
+  },
+  "targeting": {
+    "tier_1_titles": ["Vulnerability Management Analyst", "Vulnerability Analyst", "Vulnerability Management Specialist", "Vulnerability Management Engineer", "Vulnerability Engineer", "Security Vulnerability Analyst", "Vulnerability Assessment Analyst", "Vulnerability Remediation Analyst", "IAM Analyst", "IAM Engineer", "Identity & Access Management Analyst", "Identity Engineer", "IAM Security Analyst", "Okta Engineer", "Okta Administrator", "Identity Security Analyst", "Access Management Analyst", "Cybersecurity Analyst", "Security Analyst", "Security Operations Analyst", "Security Operations Engineer", "Endpoint Security Analyst", "Endpoint Security Engineer", "Security Engineer", "Cybersecurity Engineer"],
+    "tier_2_titles": ["Detection and Response Analyst", "Detection Engineer", "Incident Response Analyst", "Email Security Analyst", "Security Platform Engineer", "Cloud Security Analyst", "Cloud Security Engineer"],
+    "exclude_role_patterns": ["Okta-only", "IAM-only", "Vulnerability Management-only", "Qualys-only", "IT Auditor", "GRC Analyst", "Risk & Compliance Analyst", "Technology Risk Analyst", "Generic IT Support", "Pure SOC L1 roles", "IAM Support Engineer"],
+    "preferred_locations": ["Remote", "Pune", "Noida", "Mumbai", "Kolkata", "Hyderabad", "Secunderabad", "Gurgaon", "Gurugram", "Delhi NCR", "Bangalore", "Bengaluru", "Ahmedabad"],
+    "relocation": "YES_FOR_PREFERRED_LOCATIONS",
+    "product_company_priority": true,
+    "minimum_match_score_for_review": 70,
+    "minimum_match_score_for_submit_recommendation": 85,
+    "max_daily_applications": 10,
+    "target_companies": "ANY",
+    "minimum_ctc_lpa": 8,
+    "preferred_ctc_lpa_range": {"min": 8, "max": 16}
+  },
+  "verified_answers": {
+    "years_of_experience": "2+ years",
+    "notice_period_days": 60,
+    "current_ctc_lpa": 4.5,
+    "expected_ctc_lpa_range": {"min": 8, "max": 16},
+    "willing_to_relocate": true,
+    "work_authorization_india": "ASK_USER_WHEN_REQUIRED",
+    "visa_sponsorship": "ASK_USER_WHEN_REQUIRED"
+  }
+}

@@ -1,0 +1,1 @@
+Security Engineer responsible for endpoint security, Microsoft Defender investigations, incident response, and cloud security. Experience with EDR and security operations is preferred.
