@@ -24,4 +24,6 @@ jobs:
       - name: Compile
         run: python -m compileall -q src tests
       - name: Tests
+        env:
+          PYTHONPATH: .
         run: pytest -q
