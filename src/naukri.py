@@ -526,7 +526,7 @@ class NaukriAgent:
         text = self._body_text()
         return (
             ("jobs found" in text or "job found" in text)
-            and self.page.locator('a[href*="/job-listings/"]').count() > 0
+            and self.page.locator('a[href*="job-listings"], a[href*="/job/"]').count() > 0
         )
 
     def search(self, query: str, location: str = "") -> list[FoundJob]:
@@ -556,26 +556,68 @@ class NaukriAgent:
 
 
     def _extract_jobs(self) -> list[FoundJob]:
-        links = self.page.locator('a[href*="/job-listings/"]')
+        # Naukri job URLs may appear as /job-listings-... (no slash after
+        # job-listings) as well as /job/.... Do not assume the older URL shape.
+        links = self.page.locator('a[href*="job-listings"], a[href*="/job/"]')
         count = min(links.count(), 100)
         results: list[FoundJob] = []
         seen = set()
+
         for i in range(count):
             a = links.nth(i)
             try:
-                title = (a.inner_text() or "").strip()
                 href = a.get_attribute("href") or ""
+                title = (a.inner_text() or "").strip()
+                visible = a.is_visible()
             except Exception:
                 continue
-            if not title or len(title) < 3 or not href or href in seen:
+
+            if not visible or not href:
                 continue
-            seen.add(href)
             if href.startswith("/"):
                 href = "https://www.naukri.com" + href
+
+            # Discard navigation links that merely contain the word "job".
+            if "job-listings" not in href.lower() and "/job/" not in href.lower():
+                continue
+            if href in seen:
+                continue
+
+            # Some result anchors have no useful text; derive the title from the
+            # nearest result/card container instead.
             blob = self._nearby_card_text(a)
-            company, location, salary, experience, description = self._parse_card_blob(blob, title)
-            results.append(FoundJob(title, company, location, salary, experience, href, description))
+            blob_lines = [
+                re.sub(r"\s+", " ", x).strip()
+                for x in blob.splitlines()
+                if x.strip()
+            ]
+            if not title or len(title) < 3:
+                for line in blob_lines[:8]:
+                    if len(line) >= 4 and len(line) <= 140:
+                        title = line
+                        break
+
+            if not title or len(title) < 3:
+                continue
+
+            seen.add(href)
+            company, location, salary, experience, description = self._parse_card_blob(
+                blob, title
+            )
+            results.append(
+                FoundJob(
+                    title,
+                    company,
+                    location,
+                    salary,
+                    experience,
+                    href,
+                    description,
+                )
+            )
+
         return results
+
 
     def _nearby_card_text(self, anchor) -> str:
         js = """
