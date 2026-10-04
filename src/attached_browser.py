@@ -1,7 +1,7 @@
-"""Bridge to an already-running Chrome using the official Playwright browser extension.
+"""Bridge to an already-running Chrome using Chrome DevTools Protocol (CDP).
 
 This does not launch or take ownership of Chrome. It attaches to an existing tab/profile
-through playwright-cli --extension, so the user's normal browser session/cookies remain
+through playwright-cli --cdp=chrome, so the user's normal browser session/cookies remain
 in place. Detaching leaves Chrome running.
 """
 from __future__ import annotations
@@ -64,7 +64,7 @@ class AttachedChrome:
     def attach(self) -> str:
         # Extension mode attaches to the currently running Chrome instance and
         # its existing tabs/profile. There is no separate Playwright profile.
-        return self.run("attach", "--extension=chrome")
+        return self.run("attach", "--cdp=chrome")
 
     def select_naukri_tab(self) -> str:
         tabs = self.run("tab-list")
