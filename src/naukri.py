@@ -618,6 +618,35 @@ class NaukriAgent:
             return False
 
 
+    def _set_relevance_sort(self) -> bool:
+        """Prefer Relevance sorting when Naukri exposes the sorting control."""
+        candidates = [
+            self.page.get_by_text(re.compile(r"^personalized$", re.I)),
+            self.page.get_by_text(re.compile(r"^sort by:\s*personalized$", re.I)),
+        ]
+        for loc in candidates:
+            try:
+                for i in range(loc.count()):
+                    item = loc.nth(i)
+                    if not item.is_visible():
+                        continue
+                    item.click()
+                    self.page.wait_for_timeout(400)
+                    options = [
+                        self.page.get_by_text(re.compile(r"^relevance$", re.I)),
+                        self.page.get_by_role("option", name=re.compile(r"relevance", re.I)),
+                    ]
+                    for opt in options:
+                        for j in range(opt.count()):
+                            candidate = opt.nth(j)
+                            if candidate.is_visible():
+                                candidate.click()
+                                self.page.wait_for_timeout(800)
+                                return True
+            except Exception:
+                continue
+        return False
+
     def search(self, query: str, location: str = "") -> list[FoundJob]:
         self.ensure_logged_in()
         self.page.goto(NAUKRI_HOME, wait_until="domcontentloaded")
