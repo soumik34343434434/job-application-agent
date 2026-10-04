@@ -27,3 +27,28 @@ jobs:
         env:
           PYTHONPATH: .
         run: pytest -q
+
+
+  live_naukri_probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install Playwright
+        run: |
+          pip install "playwright>=1.60,<2" pytest
+          python -m playwright install --with-deps chromium
+      - name: Public Naukri smoke probe
+        env:
+          PYTHONPATH: .
+        run: pytest -q tests/test_live_naukri.py -s
+      - name: Upload live probe artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: naukri-live-probe
+          path: outbox/live_probe/
+          if-no-files-found: ignore
