@@ -14,7 +14,7 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from urllib.parse import quote_plus, urlparse
 
-from .credentials import get_naukri_credentials
+from .credentials import get_naukri_credentials, interactive_setup
 from .db import add_job, find_duplicate, log_event, review_queue, save_prep, set_status, submitted_count_today
 from .scorer import score_job
 from .tailoring import fingerprint_job, prepare_application, prep_to_dict
@@ -109,10 +109,17 @@ class NaukriAgent:
     def __exit__(self, exc_type, exc, tb):
         try:
             if self.context:
-                self.context.close()
+                try:
+                    self.context.close()
+                except Exception:
+                    # Browser may already have been closed by the user (or Ctrl+C).
+                    pass
         finally:
             if self._pw:
-                self._pw.stop()
+                try:
+                    self._pw.stop()
+                except Exception:
+                    pass
 
     def _artifact(self, label: str):
         safe = re.sub(r"[^A-Za-z0-9._-]+", "_", label)[:80]
@@ -196,10 +203,12 @@ class NaukriAgent:
         self.page.wait_for_timeout(800)
         username, password = get_naukri_credentials()
         if not username or not password:
-            self.wait_for_human("Naukri login is required; credentials are not configured")
-            if not self.is_logged_in():
-                raise RuntimeError("Naukri is still not logged in after human takeover")
-            return
+            print("\nNaukri credentials are not configured yet.")
+            print("I will save them in your macOS credential store; the password will not be printed or written to project files.")
+            interactive_setup()
+            username, password = get_naukri_credentials()
+            if not username or not password:
+                raise RuntimeError("Naukri credentials could not be loaded after setup.")
 
         email_locators = [
             self.page.locator('input[type="email"]'),
