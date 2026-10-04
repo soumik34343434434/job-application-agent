@@ -203,14 +203,19 @@ class NaukriAgent:
         if naukri_pages:
             self.page = naukri_pages[-1]
         else:
-            usable_pages = []
+            # Reuse an existing blank tab when possible, then navigate it to
+            # Naukri. This prevents the diagnostic and search commands from ever
+            # operating against about:blank.
+            blank_pages = []
             for page in pages:
                 try:
-                    if (page.url or "").lower() not in ("about:blank", ""):
-                        usable_pages.append(page)
+                    if (page.url or "").lower() in ("about:blank", ""):
+                        blank_pages.append(page)
                 except Exception:
                     continue
-            self.page = usable_pages[-1] if usable_pages else self.context.new_page()
+            self.page = blank_pages[-1] if blank_pages else self.context.new_page()
+            self.page.goto(NAUKRI_HOME, wait_until="domcontentloaded")
+            self.page.wait_for_timeout(1200)
 
         self.page.set_default_timeout(12000)
         return self
