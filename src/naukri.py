@@ -782,7 +782,7 @@ class NaukriAgent:
 
     @staticmethod
     def _clean_text(value: str) -> str:
-        return re.sub(r"\\s+", " ", (value or "")).strip()
+        return re.sub(r"\s+", " ", (value or "")).strip()
 
     def _first_text(self, selectors: list[str]) -> str:
         for selector in selectors:
@@ -805,7 +805,7 @@ class NaukriAgent:
             for label in labels:
                 if label in low:
                     # Handle "Experience: 2-5 Yrs" and similar one-line forms.
-                    parts = re.split(r":\\s*", line, maxsplit=1)
+                    parts = re.split(r":\s*", line, maxsplit=1)
                     if len(parts) == 2 and parts[1].strip():
                         return parts[1].strip()
                     # Otherwise use the immediately following non-empty line.
@@ -857,17 +857,25 @@ class NaukriAgent:
                 "[class*='loc']",
             ])
 
-            salary = self._first_text([
-                "div[class*='salary']",
-                "span[class*='salary']",
-                "[class*='salary']",
-            ])
+            # Prefer structured metadata parsed from the visible page text. Some
+            # Naukri DOM containers combine "experience" and "salary" in one node.
+            salary = ""
+            experience = ""
+            experience_match = re.search(
+                r"(?i)years?\s+of\s+experience\s*:\s*(\d+(?:\.\d+)?\s*(?:-|–|to)\s*\d+(?:\.\d+)?\s*(?:yrs?|years?)|\d+(?:\.\d+)?\s*\+\s*(?:yrs?|years?))",
+                body,
+            )
+            if experience_match:
+                experience = self._clean_text(experience_match.group(1))
 
-            experience = self._first_text([
-                "div[class*='experience']",
-                "span[class*='experience']",
-                "[class*='exp']",
-            ])
+            salary_match = re.search(
+                r"(?i)(?:salary|ctc|compensation)\s*:\s*([^\n|]{2,80})",
+                body,
+            )
+            if salary_match:
+                salary = self._clean_text(salary_match.group(1))
+            elif re.search(r"(?i)\bnot\s+disclosed\b", body):
+                salary = "Not Disclosed"
 
             description = self._first_text([
                 "section[class*='job-desc']",
@@ -883,10 +891,22 @@ class NaukriAgent:
                 company = self._extract_labeled_value(["company"], body)
             if not location:
                 location = self._extract_labeled_value(["location"], body)
-            if not salary:
-                salary = self._extract_labeled_value(["salary"], body)
             if not experience:
-                experience = self._extract_labeled_value(["experience"], body)
+                experience_match = re.search(
+                    r"(?i)(?:experience|years?\s+of\s+experience)\s*:\s*(\d+(?:\.\d+)?\s*(?:-|–|to)\s*\d+(?:\.\d+)?\s*(?:yrs?|years?)|\d+(?:\.\d+)?\s*\+\s*(?:yrs?|years?))",
+                    body,
+                )
+                if experience_match:
+                    experience = self._clean_text(experience_match.group(1))
+            if not salary:
+                salary_match = re.search(
+                    r"(?i)(?:salary|ctc|compensation)\s*:\s*([^\n|]{2,80})",
+                    body,
+                )
+                if salary_match:
+                    salary = self._clean_text(salary_match.group(1))
+                elif re.search(r"(?i)\bnot\s+disclosed\b", body):
+                    salary = "Not Disclosed"
 
             # Naukri detail pages normally expose a dedicated description block.
             # Avoid storing the entire page (navigation, recommendations, etc.).
@@ -918,19 +938,19 @@ class NaukriAgent:
 
             # Last-resort metadata extraction from the visible page.
             if not location:
-                m = re.search(r"(?i)(?:location|locations?)\\s*[:\\-]?\\s*([^|\\n]{2,80})", body)
+                m = re.search(r"(?i)(?:location|locations?)\s*[:\-]?\s*([^|\n]{2,80})", body)
                 if m:
                     location = self._clean_text(m.group(1))
             if not experience:
                 m = re.search(
-                    r"(?i)(?:experience|experience required)\\s*[:\\-]?\\s*(\\d+(?:\\.\\d+)?\\s*(?:-|–|to)\\s*\\d+(?:\\.\\d+)?\\s*(?:yrs?|years?)|\\d+(?:\\.\\d+)?\\s*\\+?\\s*(?:yrs?|years?))",
+                    r"(?i)(?:experience|experience required)\s*[:\-]?\s*(\d+(?:\.\d+)?\s*(?:-|–|to)\s*\d+(?:\.\d+)?\s*(?:yrs?|years?)|\d+(?:\.\d+)?\s*\+?\s*(?:yrs?|years?))",
                     body,
                 )
                 if m:
                     experience = self._clean_text(m.group(1))
             if not salary:
                 m = re.search(
-                    r"(?i)(₹\\s*[^|\\n]{1,60}?(?:lpa|lac|lakh)|\\d+(?:\\.\\d+)?\\s*(?:-\\s*\\d+(?:\\.\\d+)?)?\\s*(?:lpa|lac|lakh)|not disclosed|confidential)",
+                    r"(?i)(₹\s*[^|\n]{1,60}?(?:lpa|lac|lakh)|\d+(?:\.\d+)?\s*(?:-\s*\d+(?:\.\d+)?)?\s*(?:lpa|lac|lakh)|not disclosed|confidential)",
                     body,
                 )
                 if m:
