@@ -950,8 +950,9 @@ class NaukriAgent:
             )
         except HumanActionRequired:
             raise
-        except Exception as exc:
-            log_event(0, "JOB_DETAIL_ERROR", f"{canonical}: {exc}")
+        except RuntimeError:
+            raise
+        except Exception:
             return None
 
     def enrich_existing_jobs(self, limit: int = 30) -> list[FoundJob]:
