@@ -1541,6 +1541,58 @@ class NaukriAgent:
                     except Exception:
                         continue
 
+    def _missing_required_fields(self) -> list[str]:
+        """Find visible required form controls that still need an answer."""
+        missing = []
+        seen = set()
+        for context in self._all_contexts():
+            try:
+                controls = context.locator(
+                    'input[required], textarea[required], select[required], '
+                    '[contenteditable="true"][aria-required="true"]'
+                )
+                for i in range(min(controls.count(), 100)):
+                    control = controls.nth(i)
+                    try:
+                        if not control.is_visible() or not control.is_enabled():
+                            continue
+                        tag = (control.evaluate("(e) => e.tagName") or "").lower()
+                        typ = (control.get_attribute("type") or "").lower()
+                        if typ in {"hidden", "submit", "button", "reset", "file"}:
+                            continue
+
+                        answered = False
+                        if typ in {"checkbox", "radio"}:
+                            answered = control.is_checked()
+                        elif tag == "select":
+                            answered = bool((control.input_value() or "").strip())
+                        else:
+                            answered = bool((control.input_value() or "").strip())
+                            if not answered:
+                                try:
+                                    answered = bool((control.inner_text() or "").strip())
+                                except Exception:
+                                    pass
+
+                        if answered:
+                            continue
+
+                        label = (
+                            control.get_attribute("aria-label")
+                            or control.get_attribute("placeholder")
+                            or control.get_attribute("name")
+                            or tag
+                        )
+                        label = re.sub(r"\s+", " ", label).strip()
+                        if label and label not in seen:
+                            seen.add(label)
+                            missing.append(label)
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+        return missing
+
     def _unknown_sensitive_questions(self) -> list[str]:
         body = self._all_context_text()
         flags = []
@@ -1642,6 +1694,21 @@ class NaukriAgent:
         if not auto_submit:
             set_status(job["id"], "APPROVED", "Application form prepared; auto-submit disabled.", daily_cap)
             return "READY_TO_SUBMIT"
+
+        # Never submit a form with an unanswered required field. This catches
+        # ordinary custom application questions as well as fields that Naukri
+        # changes without warning.
+        missing_required = self._missing_required_fields()
+        if missing_required:
+            note = "Required application fields still need answers: " + "; ".join(missing_required[:12])
+            artifact = self._artifact("required_application_fields")
+            set_status(
+                job["id"],
+                "NEEDS_USER",
+                f"{note}. Screenshot: {artifact}",
+                daily_cap,
+            )
+            return "NEEDS_USER"
 
         # Final safety: refuse to submit while a known sensitive/eligibility question remains.
         remaining = self._unknown_sensitive_questions()
