@@ -174,12 +174,16 @@ class NaukriAgent:
         # browser through CDP rather than using launch_persistent_context(), which
         # would collide with an already-running Chrome profile.
         setup_agent_browser()
-        # Chrome's CDP connection does not provide Playwright-owned browser-context
-        # management. Skip Playwright's initial download-behavior command, which
-        # otherwise fails during connect_over_cdp on this setup.
-        os.environ.setdefault("PLAYWRIGHT_SKIP_SET_DOWNLOAD_BEHAVIOR", "1")
         self._pw = sync_playwright().start()
-        self.browser = self._pw.chromium.connect_over_cdp(AGENT_CDP_ENDPOINT)
+        # Playwright 1.60+ supports no_defaults for CDP attachment. This keeps
+        # Playwright from trying to override the already-running Chrome context,
+        # including download behavior, during connection.
+        self.browser = self._pw.chromium.connect_over_cdp(
+            AGENT_CDP_ENDPOINT,
+            no_defaults=True,
+            is_local=True,
+            slow_mo=self.slow_mo,
+        )
         if not self.browser.contexts:
             raise RuntimeError("Connected to dedicated Chrome, but no browser context is available.")
 
