@@ -153,6 +153,22 @@ class NaukriAgent:
         return self
 
 
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            if self.context:
+                try:
+                    self.context.close()
+                except Exception:
+                    # The browser may already have closed; cleanup should remain safe.
+                    pass
+        finally:
+            if self._pw:
+                try:
+                    self._pw.stop()
+                except Exception:
+                    pass
+
+
     def _artifact(self, label: str):
         safe = re.sub(r"[^A-Za-z0-9._-]+", "_", label)[:80]
         ts = time.strftime("%Y%m%d-%H%M%S")
@@ -253,133 +269,12 @@ class NaukriAgent:
         if self.is_logged_in():
             return
 
-        if not self._click_login():
-            raise RuntimeError("Could not find the Naukri Login control")
-
-        self.page.wait_for_timeout(800)
-
-        # This account is Google-linked. Google Sign-In is the primary path.
-        # We deliberately do not enter/store a Naukri password for this flow.
-        if self._click_google_login():
-            self.page.wait_for_timeout(1500)
-
-            # Google sign-in may open a popup/new tab or navigate the current page.
-            # Switch to the Google page when one exists so the user can complete
-            # account selection / 2FA in the real browser.
-            google_page = None
-            for p in list(self.context.pages):
-                try:
-                    if "accounts.google.com" in p.url.lower():
-                        google_page = p
-                        break
-                except Exception:
-                    continue
-
-            if google_page:
-                self.page = google_page
-
-            if self.needs_human_verification():
-                self.wait_for_human("Google/Naukri security verification is required")
-
-            # Google authentication is intentionally completed by the user.
-            # Wait for the flow to return to a Naukri page or for the existing
-            # browser context to become authenticated.
-            if "accounts.google.com" in self.page.url.lower():
-                self.wait_for_human("Complete Google account selection/sign-in in the browser")
-
-            deadline = time.time() + 60
-            while time.time() < deadline:
-                # Prefer an authenticated Naukri page among all open pages.
-                for p in list(self.context.pages):
-                    try:
-                        u = p.url.lower()
-                        if "naukri.com" in u:
-                            body = p.locator("body").inner_text(timeout=1500).lower()
-                            if any(marker in body for marker in (
-                                "my naukri", "my profile", "view profile", "logout", "sign out"
-                            )):
-                                self.page = p
-                                return
-                    except Exception:
-                        continue
-                try:
-                    if "naukri.com" in self.page.url.lower() and self.is_logged_in():
-                        return
-                except Exception:
-                    pass
-                self.page.wait_for_timeout(1000)
-
-            # Give the user one final takeover if the redirect is slower than expected.
-            self.wait_for_human("Finish Google sign-in and return to Naukri in the browser")
-            for p in list(self.context.pages):
-                try:
-                    if "naukri.com" in p.url.lower():
-                        self.page = p
-                        if self.is_logged_in():
-                            return
-                except Exception:
-                    continue
-            if self.is_logged_in():
-                return
-            raise RuntimeError("Google sign-in was not confirmed on Naukri")
-
-        # If Google is not available on the login page, only then allow a
-        # previously configured Naukri password as an explicit fallback.
-        username, password = get_naukri_credentials()
-        if username and password:
-            print("Google Sign-In was not detected; using configured Naukri credentials.")
-            email_locators = [
-                self.page.locator('input[type="email"]'),
-                self.page.locator('input[placeholder*="email" i]'),
-                self.page.locator('input[name*="email" i]'),
-                self.page.locator('input[type="text"]'),
-            ]
-            filled = False
-            for loc in email_locators:
-                try:
-                    if loc.count():
-                        loc.first.fill(username)
-                        filled = True
-                        break
-                except Exception:
-                    pass
-            if not filled:
-                raise RuntimeError("Could not locate the Naukri username field")
-
-            pw = self.page.locator('input[type="password"]')
-            if not pw.count():
-                raise RuntimeError("Could not locate the Naukri password field")
-            pw.first.fill(password)
-
-            buttons = [
-                self.page.get_by_role("button", name=re.compile(r"^(login|sign in|log in)$", re.I)),
-                self.page.locator('button[type="submit"]'),
-                self.page.get_by_text(re.compile(r"^(login|sign in|log in)$", re.I)),
-            ]
-            clicked = False
-            for btn in buttons:
-                try:
-                    if btn.count():
-                        btn.first.click()
-                        clicked = True
-                        break
-                except Exception:
-                    pass
-            if not clicked:
-                raise RuntimeError("Could not locate the Naukri login button")
-
-            self.page.wait_for_timeout(1500)
-            if self.needs_human_verification():
-                self.wait_for_human("Naukri requires CAPTCHA/security verification")
-            if not self.is_logged_in():
-                self.wait_for_human("Naukri requires an OTP or additional login verification")
-            if not self.is_logged_in():
-                raise RuntimeError("Naukri login could not be confirmed")
-            return
-
         raise RuntimeError(
-            "Google Sign-In was not detected on the Naukri login page. "
-            "The browser has been left open for manual login."
+            "Naukri is not logged in in the dedicated agent profile. "
+            "Run 'python3 -m src.cli naukri setup-browser' once, complete "
+            "Sign in with Google manually in that normal Chrome window, close it, "
+            "then run the agent again. The automation runner never attempts "
+            "to automate Google authentication."
         )
 
     def create_account(self):
