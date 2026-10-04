@@ -52,3 +52,42 @@ def test_application_required_field_detection():
         assert "email" not in [x.lower() for x in missing]
         assert "mobile" not in [x.lower() for x in missing]
         browser.close()
+
+
+def test_application_required_field_detection():
+    """Required-field guard works on a representative Naukri-like form."""
+    from pathlib import Path
+    from playwright.sync_api import sync_playwright
+    from src.naukri import NaukriAgent
+
+    html = """
+    <form>
+      <label>Full name <input aria-label="Full name" required></label>
+      <label>Email <input aria-label="Email" required></label>
+      <label>Mobile <input aria-label="Mobile" required></label>
+      <label>Notice period <input aria-label="Notice period" required></label>
+      <label>Expected CTC <input aria-label="Expected CTC" required></label>
+      <label>Work authorization <input aria-label="Work authorization" required></label>
+    </form>
+    """
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(html)
+        agent = NaukriAgent(headless=True, slow_mo=0)
+        agent.page = page
+        agent._fill_common_fields(
+            {
+                "name": "Test User",
+                "email": "test@example.invalid",
+                "phone": "0000000000",
+            },
+            resume_path=Path("/nonexistent/resume.pdf"),
+        )
+        missing = agent._missing_required_fields()
+        lowered = [x.lower() for x in missing]
+        assert "work authorization" in lowered
+        assert "full name" not in lowered
+        assert "email" not in lowered
+        assert "mobile" not in lowered
+        browser.close()
