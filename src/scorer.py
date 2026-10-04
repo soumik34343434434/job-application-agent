@@ -256,7 +256,9 @@ def score_job(title: str, description: str, company: str = "") -> ScoreResult:
 
     # Exact verified tools/domains carry the most weight.
     if verified_groups:
-        # Two or more verified skill families plus a target role should cross the\n        # review/submit boundary only when the evidence is substantial.\n        score += min(40, 15 * len(verified_groups))
+        # Two or more verified skill families plus a target role should cross the
+        # review/submit boundary only when the evidence is substantial.
+        score += min(40, 15 * len(verified_groups))
         reasons.append(
             f"JD matches {min(len(verified_groups), 5)} verified security skill areas from the resume."
         )
