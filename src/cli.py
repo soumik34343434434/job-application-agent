@@ -85,71 +85,20 @@ def cmd_naukri_create_account(args):
 
 
 def cmd_naukri_login(args):
-    from .attached_browser import AttachedChrome
+    from .naukri import NaukriAgent, AGENT_BROWSER_DIR
 
-    browser = AttachedChrome(session="naukri", profile_dir_name="Default")
-    print("Attaching to your already-running Chrome via Chrome DevTools Protocol (CDP)...")
-    print("Your existing Default Chrome profile, cookies, and logged-in sessions are reused.")
-    print(browser.attach())
-    print(browser.select_naukri_tab())
-
-    info = browser.page_info()
-    if "naukri.com" not in str(info.get("url", "")).lower():
-        browser.goto("https://www.naukri.com/")
-        info = browser.page_info()
-
-    # Naukri currently exposes login as a modal on the homepage.
-    if browser.open_naukri_login() != "true":
-        raise RuntimeError(
-            "Could not open Naukri's login modal. The Login control may have changed."
-        )
-    import time
-    time.sleep(1)
-
-    if browser.is_naukri_logged_in():
-        print("Naukri session is already authenticated.")
-    else:
-        print("Naukri is not authenticated. Opening Google Sign-In...")
-        if browser.click_google_sign_in():
-            print("Google Sign-In control clicked.")
-            print("If Google asks you to choose an account or complete 2-step verification, complete that in Chrome.")
-
-            # A Google flow may open a new tab. Give the browser a moment and
-            # surface the current tabs for visibility.
-            time.sleep(2)
-            print(browser.run("tab-list"))
-
-            # Wait for the OAuth flow to return to an authenticated Naukri tab.
-            deadline = time.time() + 90
-            while time.time() < deadline:
-                try:
-                    tabs = browser.run("tab-list")
-                    matches = re.findall(
-                        r"(?m)^\s*-\s*(\d+):.*?https?://(?:www\.)?naukri\.com",
-                        tabs, re.I
-                    )
-                    for tab_id in matches:
-                        browser.run("tab-select", tab_id)
-                        if browser.is_naukri_logged_in():
-                            print("Naukri session is authenticated.")
-                            deadline = 0
-                            break
-                except Exception:
-                    pass
-                if deadline == 0:
-                    break
-                time.sleep(1)
-        else:
-            print("Google Sign-In control was not detected on the Naukri login page.")
-            print("The Naukri login page is open in your Chrome tab for manual inspection.")
-
-    info = browser.page_info()
-    print(json.dumps({
-        "url": info.get("url"),
-        "title": info.get("title"),
-        "naukri_logged_in": browser.is_naukri_logged_in(),
-    }, indent=2, ensure_ascii=False))
-    print("\nChrome stays open. The agent only detaches from it when this command ends.")
+    print("Launching the dedicated Naukri browser profile.")
+    print(f"Persistent profile: {AGENT_BROWSER_DIR}")
+    print("Your normal Chrome profile remains untouched.")
+    agent = NaukriAgent(headless=False, slow_mo=args.slow_mo)
+    agent.__enter__()
+    try:
+        agent.ensure_logged_in()
+        print("Naukri login/session confirmed.")
+        print("The dedicated Naukri browser stays open. Press Enter here when you want to close it.")
+        input()
+    finally:
+        agent.__exit__(None, None, None)
 
 
 def cmd_naukri_scan(args):
