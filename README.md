@@ -123,3 +123,26 @@ python3 -m src.cli naukri login
 ```
 
 The login command now keeps Chrome open after authentication. Press Enter in the VS Code terminal when you want the agent to close the browser.
+
+
+## Daily automatic run on macOS
+
+The final workflow runs locally on the Mac so the same persistent Naukri Chrome session and SQLite tracker are used every day.
+
+One-time installation:
+
+```bash
+bash scripts/install_daily_naukri.sh
+```
+
+After that, macOS launches the agent every day at 10:00 AM local time. The agent scans targeted Naukri searches, reads live job details, scores them, and attempts up to the configured 10 daily applications with `--auto-submit`.
+
+The daily runner is non-interactive: CAPTCHA/security checks, expired login sessions, external applications, and sensitive eligibility questions are recorded as `NEEDS_USER` or an error instead of guessing an answer or waiting forever for terminal input.
+
+To run the same workflow manually:
+
+```bash
+python3 -m src.cli naukri autopilot --scan-queries 6 --per-query 12 --limit 10 --auto-submit --slow-mo 100
+```
+
+The GitHub Actions self-hosted runner remains development/CI infrastructure. It is not required to stay busy for the daily job scheduler.
