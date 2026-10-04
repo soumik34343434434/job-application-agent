@@ -130,6 +130,28 @@ def test_authenticated_naukri_browser_surface():
             json.dumps(report, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+
+        # Capture the exact DOM nodes containing the visible search launcher text.
+        search_dom = agent.page.evaluate(
+            """
+            () => Array.from(document.querySelectorAll('*'))
+              .filter(e => /search jobs here/i.test((e.innerText || '').trim()) && e.offsetParent !== null)
+              .slice(0, 20)
+              .map(e => ({
+                tag: e.tagName,
+                text: (e.innerText || '').trim().slice(0, 500),
+                aria: e.getAttribute('aria-label'),
+                role: e.getAttribute('role'),
+                id: e.id || null,
+                className: String(e.className || '').slice(0, 1000),
+                outerHTML: e.outerHTML.slice(0, 3000)
+              }))
+            """
+        )
+        (artifact_dir / "search_dom.json").write_text(
+            json.dumps(search_dom, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
         _safe_screenshot(agent.page, artifact_dir / "search_surface.png")
 
         inputs = report.get("inputs", [])
