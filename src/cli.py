@@ -84,17 +84,20 @@ def cmd_naukri_create_account(args):
 
 
 def cmd_naukri_login(args):
-    from .naukri import NaukriAgent, BROWSER_DIR
-    # Keep the browser open after login so the user can inspect the session.
-    agent = NaukriAgent(headless=False, slow_mo=args.slow_mo)
-    agent.__enter__()
-    try:
-        agent.ensure_logged_in()
-        print(f"Naukri login confirmed. Persistent browser profile: {BROWSER_DIR}")
-        print("Chrome will stay open. Press Enter here when you want to close it.")
-        input()
-    finally:
-        agent.__exit__(None, None, None)
+    from .attached_browser import AttachedChrome
+
+    browser = AttachedChrome(session="naukri", profile_dir_name="Default")
+    print("Attaching to your already-running Chrome via the Playwright Extension...")
+    print("Your existing Chrome profile, cookies, and logged-in sessions are reused.")
+    print(browser.attach())
+    print(browser.select_naukri_tab())
+    info = browser.page_info()
+    print(json.dumps({
+        "url": info.get("url"),
+        "title": info.get("title"),
+        "naukri_logged_in": browser.is_naukri_logged_in(),
+    }, indent=2, ensure_ascii=False))
+    print("\nChrome stays open. The agent only detaches from it when this command ends.")
 
 
 def cmd_naukri_scan(args):
