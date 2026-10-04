@@ -529,6 +529,75 @@ class NaukriAgent:
             and self.page.locator('a[href*="job-listings"], a[href*="/job/"]').count() > 0
         )
 
+    def inspect_current_page(self) -> dict:
+        """Collect current visible Naukri UI metadata without navigating."""
+        info = {
+            "url": self.page.url,
+            "title": "",
+            "inputs": [],
+            "buttons": [],
+            "links": [],
+            "headings": [],
+        }
+        try:
+            info["title"] = self.page.title()
+        except Exception:
+            pass
+
+        try:
+            for i in range(min(self.page.locator("input").count(), 80)):
+                el = self.page.locator("input").nth(i)
+                if el.is_visible():
+                    info["inputs"].append({
+                        "type": el.get_attribute("type"),
+                        "placeholder": el.get_attribute("placeholder"),
+                        "aria": el.get_attribute("aria-label"),
+                        "name": el.get_attribute("name"),
+                        "value": el.input_value(),
+                    })
+        except Exception:
+            pass
+
+        try:
+            for i in range(min(self.page.locator("button").count(), 120)):
+                el = self.page.locator("button").nth(i)
+                if el.is_visible():
+                    info["buttons"].append(
+                        re.sub(r"\s+", " ", (el.inner_text() or "")).strip()
+                    )
+        except Exception:
+            pass
+
+        try:
+            for i in range(min(self.page.locator("a[href]").count(), 250)):
+                el = self.page.locator("a[href]").nth(i)
+                if not el.is_visible():
+                    continue
+                href = el.get_attribute("href") or ""
+                text = re.sub(r"\s+", " ", (el.inner_text() or "")).strip()
+                if href and (text or "job" in href.lower()):
+                    info["links"].append({
+                        "text": text[:160],
+                        "href": href[:500],
+                    })
+        except Exception:
+            pass
+
+        try:
+            for i in range(min(self.page.locator("h1,h2,h3").count(), 80)):
+                el = self.page.locator("h1,h2,h3").nth(i)
+                if el.is_visible():
+                    text = re.sub(r"\s+", " ", (el.inner_text() or "")).strip()
+                    if text:
+                        info["headings"].append(text[:200])
+        except Exception:
+            pass
+
+        # Save a full screenshot so the inspected state can be correlated with
+        # what the user sees, without changing the page.
+        info["screenshot"] = str(self._artifact("naukri_current_page_inspect"))
+        return info
+
     def search(self, query: str, location: str = "") -> list[FoundJob]:
         self.ensure_logged_in()
         self.page.goto(NAUKRI_HOME, wait_until="domcontentloaded")
