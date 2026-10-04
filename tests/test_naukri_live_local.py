@@ -6,6 +6,7 @@ import pytest
 
 from src.naukri import NaukriAgent
 from src.naukri_inspector import AGENT_CDP_ENDPOINT, NaukriInspector
+from src.scorer import score_job
 
 
 @pytest.mark.naukri_live
@@ -165,5 +166,123 @@ def test_authenticated_naukri_browser_surface():
     except Exception as exc:
         diagnostics("unexpected_exception", exc)
         raise
+    finally:
+        inspector.close()
+
+
+
+@pytest.mark.naukri_live
+def test_naukri_live_search_extract_and_score():
+    """
+    End-to-end dry run of the discovery pipeline against the user's own
+    authenticated Naukri browser.
+
+    It searches but never applies or submits. It validates:
+      search form -> 2 years -> location -> real job-listing extraction ->
+      authoritative detail extraction -> profile scoring.
+    """
+    artifact_dir = Path("outbox/live_runner")
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+
+    inspector = NaukriInspector()
+    agent = None
+    try:
+        inspector.connect()
+
+        info = inspector.page_info()
+        if "naukri.com" not in (info.get("url") or "").lower():
+            pytest.fail(f"Dedicated Chrome is not currently on Naukri: {info}")
+
+        agent = NaukriAgent(headless=False, slow_mo=0)
+        agent._pw = inspector._pw
+        agent.browser = inspector.browser
+        agent.context = inspector.context
+        agent.page = inspector.page
+        agent.page.set_default_timeout(12000)
+
+        if not agent.is_logged_in():
+            pytest.fail("Dedicated Naukri Chrome is not authenticated.")
+
+        agent.page.goto("https://www.naukri.com/", wait_until="domcontentloaded", timeout=20000)
+        agent.page.wait_for_timeout(1200)
+
+        if agent.needs_human_verification():
+            agent.page.screenshot(path=str(artifact_dir / "dry_run_security_gate.png"), full_page=True)
+            pytest.skip("Naukri presented a security gate before the dry-run search.")
+
+        query = "Cybersecurity Engineer"
+        location = "Kolkata"
+
+        if not agent._fill_search_form(query, location):
+            pytest.fail("Could not fill/submit the live Naukri search form.")
+
+        if agent.needs_human_verification():
+            agent.page.screenshot(path=str(artifact_dir / "dry_run_search_gate.png"), full_page=True)
+            pytest.skip("Naukri presented a security gate during the dry-run search.")
+
+        agent._set_relevance_sort()
+        agent.page.wait_for_timeout(1200)
+
+        if agent.needs_human_verification():
+            agent.page.screenshot(path=str(artifact_dir / "dry_run_sort_gate.png"), full_page=True)
+            pytest.skip("Naukri presented a security gate after search results loaded.")
+
+        jobs = agent._extract_jobs()
+        if not jobs:
+            agent.page.screenshot(path=str(artifact_dir / "dry_run_no_jobs.png"), full_page=True)
+            pytest.fail("Search returned no real Naukri job-listing URLs.")
+
+        # Prevent _extract_job_detail from waiting indefinitely for a human in CI.
+        def no_human_takeover(reason):
+            from src.naukri import HumanActionRequired
+            raise HumanActionRequired(reason)
+
+        agent.wait_for_human = no_human_takeover
+
+        details = []
+        for card_job in jobs[:3]:
+            try:
+                detail = agent._extract_job_detail(card_job.url)
+            except HumanActionRequired:
+                pytest.skip("Naukri presented a security gate while opening a job detail page.")
+            if not detail:
+                continue
+
+            scored = score_job(detail.title, detail.description, detail.company)
+            details.append({
+                "title": detail.title,
+                "company": detail.company,
+                "location": detail.location,
+                "salary": detail.salary,
+                "experience": detail.experience,
+                "url": detail.url,
+                "description_length": len(detail.description or ""),
+                "score": scored.score,
+                "recommendation": scored.recommendation,
+                "matched": scored.matched,
+                "penalties": scored.penalties,
+                "reasons": scored.reasons,
+            })
+
+        if not details:
+            pytest.fail("Found real job links, but could not extract any authoritative job details.")
+
+        (artifact_dir / "dry_run_pipeline.json").write_text(
+            json.dumps(
+                {
+                    "query": query,
+                    "location": location,
+                    "search_url": agent.page.url,
+                    "jobs_found": len(jobs),
+                    "jobs": [job.to_dict() for job in jobs[:10]],
+                    "details_scored": details,
+                    "did_submit_application": False,
+                },
+                indent=2,
+                ensure_ascii=False,
+                default=str,
+            ),
+            encoding="utf-8",
+        )
     finally:
         inspector.close()
