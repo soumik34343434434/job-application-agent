@@ -618,6 +618,16 @@ class NaukriAgent:
         return None
 
     def _fill_search_form(self, query: str, location: str) -> bool:
+        # is_logged_in() intentionally checks the authenticated profile route.
+        # Always return to the Naukri homepage before interacting with the header
+        # search form; otherwise the live regression can start on /mnjuser/profile,
+        # where the current search controls are not guaranteed to be mounted.
+        try:
+            self.page.goto(NAUKRI_HOME, wait_until="domcontentloaded", timeout=15000)
+            self.page.wait_for_timeout(1200)
+        except Exception:
+            return False
+
         # Current authenticated Naukri homepage: expand "Search jobs here",
         # then fill the three visible search controls reported by inspect-search.
         self.activate_header_search()
