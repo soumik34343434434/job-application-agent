@@ -109,6 +109,57 @@ def test_authenticated_naukri_browser_surface():
     except Exception as exc:
         diagnostics("unexpected_exception", exc)
         raise
+
+        # Safe live application-form regression: enter one real Naukri listing,
+        # click Apply, fill verified common fields, and stop before submit.
+        candidate = next((item for item in details if int(item["score"]) >= 70), details[0])
+        from src.db import add_job
+
+        full_detail = agent._extract_job_detail(candidate["url"])
+        if full_detail is None:
+            pytest.skip("Could not reopen a live job detail for the safe apply-form regression.")
+
+        scored = score_job(full_detail.title, full_detail.description, full_detail.company)
+        job_id = add_job(
+            full_detail.company,
+            full_detail.title,
+            full_detail.url,
+            full_detail.description,
+            scored.score,
+            scored.recommendation,
+        )
+        form_job = {
+            "id": job_id,
+            "title": full_detail.title,
+            "company": full_detail.company,
+            "url": full_detail.url,
+            "score": scored.score,
+        }
+
+        outcome = agent.apply_job(form_job, auto_submit=False)
+        if outcome not in {
+            "READY_TO_SUBMIT",
+            "ALREADY_APPLIED",
+            "EXTERNAL_APPLICATION",
+            "NEEDS_USER",
+        }:
+            pytest.fail(f"Unexpected safe application-form outcome: {outcome}")
+        assert outcome not in {"SUBMITTED", "SUBMITTED_UNCONFIRMED"}
+
+        (artifact_dir / "safe_apply_form.json").write_text(
+            json.dumps(
+                {
+                    "job": form_job,
+                    "outcome": outcome,
+                    "did_submit_application": False,
+                },
+                indent=2,
+                ensure_ascii=False,
+                default=str,
+            ),
+            encoding="utf-8",
+        )
+
     finally:
         agent.__exit__(None, None, None)
 
