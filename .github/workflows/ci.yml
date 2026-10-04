@@ -59,20 +59,35 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Prepare Python
+      - name: Prepare native ARM64 Python
         run: |
-          test -x /Users/sante/Downloads/job_application_agent/.venv/bin/python
-          /Users/sante/Downloads/job_application_agent/.venv/bin/python --version
-          /Users/sante/Downloads/job_application_agent/.venv/bin/python -m pip --version
+          set -e
+          for candidate in /opt/homebrew/bin/python3 /usr/local/bin/python3 /opt/homebrew/bin/python3.13 /opt/homebrew/bin/python3.12 /opt/homebrew/bin/python3.11; do
+            if [ -x "$candidate" ]; then
+              arch -arm64 "$candidate" --version 2>/dev/null || true
+              if arch -arm64 "$candidate" -c 'import sys; print(sys.version_info >= (3, 10))' 2>/dev/null | grep -q True; then
+                echo "CI_PYTHON=$candidate" >> "$GITHUB_ENV"
+                exit 0
+              fi
+            fi
+          done
+          echo "No native ARM64 Python >=3.10 found." >&2
+          echo "PATH: $PATH" >&2
+          command -v python3 || true
+          file "$(command -v python3)" || true
+          exit 1
       - name: Install dependencies
         run: |
-          /Users/sante/Downloads/job_application_agent/.venv/bin/python -m pip install -r requirements.txt pytest
+          arch -arm64 "$CI_PYTHON" -m venv .ci-venv
+          arch -arm64 .ci-venv/bin/python --version
+          arch -arm64 .ci-venv/bin/python -m pip install --upgrade pip
+          arch -arm64 .ci-venv/bin/python -m pip install -r requirements.txt pytest
       - name: Authenticated Naukri live regression
         env:
           PYTHONPATH: .
           NAUKRI_CDP_PORT: "9229"
         run: |
-          /Users/sante/Downloads/job_application_agent/.venv/bin/python -m pytest -q -m naukri_live tests/test_naukri_live_local.py -s
+          arch -arm64 .ci-venv/bin/python -m pytest -q -m naukri_live tests/test_naukri_live_local.py -s
       - name: Upload Naukri live diagnostics
         if: always()
         uses: actions/upload-artifact@v4
