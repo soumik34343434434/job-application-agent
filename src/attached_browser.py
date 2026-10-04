@@ -127,37 +127,42 @@ class AttachedChrome:
             raise RuntimeError(f"Could not parse browser state: {raw}") from exc
 
     def open_naukri_login(self) -> str:
-        """Open Naukri's login page in the attached tab."""
-        return self.goto("https://www.naukri.com/nlogin/login")
+        """Open Naukri's login modal from the homepage."""
+        return self.eval("""() => {
+          const candidates = [...document.querySelectorAll('button, a, [role="button"]')];
+          const el = candidates.find(e => /^\\s*login\\s*$/i.test(
+            (e.innerText || '').replace(/\\s+/g, ' ').trim()
+          ));
+          if (!el) return false;
+          el.click();
+          return true;
+        }""")
 
     def click_google_sign_in(self) -> bool:
-        """Click a visible Google sign-in control on Naukri's login page."""
+        """Click Naukri's visible 'Sign in with Google' button."""
         expr = """() => {
-          const textOf = (e) =>
-            ((e.innerText || '') + ' ' +
-             (e.getAttribute('aria-label') || '') + ' ' +
-             (e.getAttribute('title') || '')).replace(/\\s+/g, ' ').trim();
+          const candidates = [...document.querySelectorAll('button, a, [role="button"]')];
+          const normalize = (s) => (s || '').replace(/\\s+/g, ' ').trim();
 
-          const candidates = [...document.querySelectorAll(
-            'button, a, [role="button"], div, span, p'
-          )];
-
-          // Prefer an element whose own text/aria/title explicitly identifies Google.
+          // Prefer the exact visible control shown in the Naukri login modal.
           let el = candidates.find(e =>
-            /(?:continue|sign|log|login|use).*google|google.*(?:account|sign|login)/i.test(textOf(e))
+            /^sign\\s+in\\s+with\\s+google$/i.test(normalize(e.innerText))
           );
 
-          // Fall back to a clickable ancestor when the label is inside an SVG/span.
           if (!el) {
-            const labelled = candidates.find(e =>
-              /google/i.test(textOf(e)) &&
-              (e.querySelector('svg') || e.closest('button,a,[role="button"]'))
-            );
-            el = labelled?.closest('button,a,[role="button"]') || labelled;
+            el = candidates.find(e => {
+              const label = normalize(
+                (e.innerText || '') + ' ' +
+                (e.getAttribute('aria-label') || '') + ' ' +
+                (e.getAttribute('title') || '')
+              );
+              return /sign\\s+in\\s+with\\s+google/i.test(label);
+            });
           }
 
           if (!el) return false;
-          (el.closest('button,a,[role="button"]') || el).click();
+          el.scrollIntoView({block: 'center'});
+          el.click();
           return true;
         }"""
         return self.eval(expr).strip().strip('"') == "true"
