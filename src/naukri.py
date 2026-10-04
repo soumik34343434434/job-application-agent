@@ -454,14 +454,28 @@ class NaukriAgent:
             self.page.get_by_role("button", name=re.compile(r"search jobs here|search", re.I)),
             self.page.locator('[aria-label*="search jobs here" i]'),
             self.page.locator('[placeholder*="search jobs here" i]'),
+            # Current logged-in Naukri homepage uses a wrapper around the
+            # collapsed search launcher; text-based locators can land on a
+            # sibling ("Search appearances") instead of the clickable wrapper.
+            self.page.locator('div.searchAppWrapper'),
+            self.page.locator('[class*="searchAppWrapper"]'),
         ]
         for loc in candidates:
             try:
-                for i in range(loc.count()):
+                for i in range(min(loc.count(), 20)):
                     candidate = loc.nth(i)
-                    if candidate.is_visible() and candidate.is_enabled():
-                        candidate.click()
-                        self.page.wait_for_timeout(700)
+                    if not candidate.is_visible() or not candidate.is_enabled():
+                        continue
+                    candidate.scroll_into_view_if_needed()
+                    candidate.click(position={"x": max(1, min(20, int(candidate.bounding_box()["width"] / 2))) if candidate.bounding_box() else 5,
+                                    "y": max(1, min(20, int(candidate.bounding_box()["height"] / 2))) if candidate.bounding_box() else 5})
+                    self.page.wait_for_timeout(700)
+                    # Success is defined by the actual search controls appearing.
+                    if self.page.locator('input[placeholder="Enter keyword / designation / companies"]').count():
+                        return True
+                    # Some builds animate the inputs in after the click.
+                    self.page.wait_for_timeout(500)
+                    if self.page.locator('input[placeholder="Enter keyword / designation / companies"]').count():
                         return True
             except Exception:
                 continue
