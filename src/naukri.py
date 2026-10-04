@@ -16,7 +16,7 @@ from pathlib import Path
 from urllib.parse import quote_plus, urlparse
 
 from .credentials import get_naukri_credentials, interactive_setup
-from .db import add_job, find_duplicate, log_event, review_queue, save_prep, set_status, submitted_count_today
+from .db import add_job, find_duplicate, get_job, list_jobs, log_event, review_queue, save_prep, set_status, submitted_count_today, update_job_details
 from .scorer import score_job
 from .tailoring import fingerprint_job, prepare_application, prep_to_dict
 
@@ -780,6 +780,227 @@ class NaukriAgent:
         description = " ".join(lines[:18])
         return company or "Unknown", location, salary, experience, description
 
+    @staticmethod
+    def _clean_text(value: str) -> str:
+        return re.sub(r"\\s+", " ", (value or "")).strip()
+
+    def _first_text(self, selectors: list[str]) -> str:
+        for selector in selectors:
+            try:
+                loc = self.page.locator(selector)
+                for i in range(min(loc.count(), 10)):
+                    item = loc.nth(i)
+                    if item.is_visible():
+                        text = self._clean_text(item.inner_text())
+                        if text:
+                            return text
+            except Exception:
+                continue
+        return ""
+
+    def _extract_labeled_value(self, labels: list[str], body: str) -> str:
+        lines = [self._clean_text(x) for x in body.splitlines() if self._clean_text(x)]
+        for i, line in enumerate(lines):
+            low = line.lower()
+            for label in labels:
+                if label in low:
+                    # Handle "Experience: 2-5 Yrs" and similar one-line forms.
+                    parts = re.split(r":\\s*", line, maxsplit=1)
+                    if len(parts) == 2 and parts[1].strip():
+                        return parts[1].strip()
+                    # Otherwise use the immediately following non-empty line.
+                    if i + 1 < len(lines):
+                        nxt = lines[i + 1]
+                        if nxt and len(nxt) <= 100:
+                            return nxt
+        return ""
+
+    def _extract_job_detail(self, url: str) -> FoundJob | None:
+        """Open one real Naukri listing and extract authoritative job-page data."""
+        canonical = (url or "").split("?")[0]
+        if not canonical:
+            return None
+
+        try:
+            self.page.goto(canonical, wait_until="domcontentloaded", timeout=20000)
+            self.page.wait_for_timeout(1400)
+
+            if self.needs_human_verification():
+                self.wait_for_human("Naukri presented CAPTCHA/security verification on a job detail page")
+
+            page_url = self.page.url or canonical
+            if "/nlogin/" in page_url.lower() or "/login" in page_url.lower():
+                raise RuntimeError("Naukri login session expired while opening a job detail page.")
+
+            body = self.page.locator("body").inner_text(timeout=7000)
+            body_clean = self._clean_text(body)
+
+            title = self._first_text([
+                "h1.jd-header-title",
+                "h1[class*='jd-header-title']",
+                "h1[class*='job-title']",
+                "h1",
+            ])
+
+            company = self._first_text([
+                "div[class*='jd-header-comp-name'] a",
+                "div[class*='jd-header-comp-name']",
+                "a[class*='comp-name']",
+                "[class*='company-name'] a",
+                "[class*='company-name']",
+            ])
+
+            location = self._first_text([
+                "span[class*='location']",
+                "span[class*='loc']",
+                "[class*='location']",
+                "[class*='loc']",
+            ])
+
+            salary = self._first_text([
+                "div[class*='salary']",
+                "span[class*='salary']",
+                "[class*='salary']",
+            ])
+
+            experience = self._first_text([
+                "div[class*='experience']",
+                "span[class*='experience']",
+                "[class*='exp']",
+            ])
+
+            description = self._first_text([
+                "section[class*='job-desc']",
+                "div[class*='job-desc']",
+                "section[class*='jd-desc']",
+                "div[class*='jd-desc']",
+                "[class*='jobDescription']",
+                "[class*='job-description']",
+            ])
+
+            # Fallbacks from the visible page text when a CSS class changes.
+            if not company:
+                company = self._extract_labeled_value(["company"], body)
+            if not location:
+                location = self._extract_labeled_value(["location"], body)
+            if not salary:
+                salary = self._extract_labeled_value(["salary"], body)
+            if not experience:
+                experience = self._extract_labeled_value(["experience"], body)
+
+            # Naukri detail pages normally expose a dedicated description block.
+            # Avoid storing the entire page (navigation, recommendations, etc.).
+            if len(description) < 120:
+                headings = self.page.get_by_text(
+                    re.compile(r"^job description$|^about the job$|^roles? and responsibilities$",
+                                re.I)
+                )
+                for i in range(min(headings.count(), 8)):
+                    try:
+                        heading = headings.nth(i)
+                        if not heading.is_visible():
+                            continue
+                        candidate = heading.evaluate(
+                            """(e) => {
+                                let n = e.parentElement;
+                                for (let i = 0; i < 5 && n; i++, n = n.parentElement) {
+                                    const t = (n.innerText || '').trim();
+                                    if (t.length >= 250) return t;
+                                }
+                                return '';
+                            }"""
+                        )
+                        candidate = self._clean_text(candidate)
+                        if len(candidate) > len(description):
+                            description = candidate
+                    except Exception:
+                        continue
+
+            # Last-resort metadata extraction from the visible page.
+            if not location:
+                m = re.search(r"(?i)(?:location|locations?)\\s*[:\\-]?\\s*([^|\\n]{2,80})", body)
+                if m:
+                    location = self._clean_text(m.group(1))
+            if not experience:
+                m = re.search(
+                    r"(?i)(?:experience|experience required)\\s*[:\\-]?\\s*(\\d+(?:\\.\\d+)?\\s*(?:-|–|to)\\s*\\d+(?:\\.\\d+)?\\s*(?:yrs?|years?)|\\d+(?:\\.\\d+)?\\s*\\+?\\s*(?:yrs?|years?))",
+                    body,
+                )
+                if m:
+                    experience = self._clean_text(m.group(1))
+            if not salary:
+                m = re.search(
+                    r"(?i)(₹\\s*[^|\\n]{1,60}?(?:lpa|lac|lakh)|\\d+(?:\\.\\d+)?\\s*(?:-\\s*\\d+(?:\\.\\d+)?)?\\s*(?:lpa|lac|lakh)|not disclosed|confidential)",
+                    body,
+                )
+                if m:
+                    salary = self._clean_text(m.group(1))
+
+            if not title or not company or len(description) < 120:
+                return None
+
+            return FoundJob(
+                title=title,
+                company=company,
+                location=location,
+                salary=salary,
+                experience=experience,
+                url=canonical,
+                description=description,
+            )
+        except HumanActionRequired:
+            raise
+        except Exception as exc:
+            log_event(0, "JOB_DETAIL_ERROR", f"{canonical}: {exc}")
+            return None
+
+    def enrich_existing_jobs(self, limit: int = 30) -> list[FoundJob]:
+        """Refresh existing real Naukri rows from their live job pages."""
+        from .cli import load_profile
+
+        profile = load_profile()
+        refreshed: list[FoundJob] = []
+        rows = [
+            row for row in list_jobs()
+            if row["url"]
+            and "/job-listings-" in row["url"].lower()
+            and row["status"] not in ("SUBMITTED", "ALREADY_APPLIED")
+        ]
+
+        for row in rows[:limit]:
+            detail = self._extract_job_detail(row["url"])
+            if not detail:
+                continue
+
+            if not self._target_preference_ok(detail, profile):
+                set_status(row["id"], "SKIP", "Live job details fail targeting preferences.")
+                refreshed.append(detail)
+                continue
+
+            result = score_job(detail.title, detail.description, detail.company)
+            detail.score = result.score
+            detail.recommendation = result.recommendation
+            detail.job_id = row["id"]
+
+            update_job_details(
+                row["id"],
+                detail.company,
+                detail.title,
+                detail.url,
+                detail.description,
+                result.score,
+                result.recommendation,
+            )
+
+            if result.score >= profile["targeting"]["minimum_match_score_for_review"]:
+                prep = prepare_application(detail.title, detail.description, profile, detail.company)
+                save_prep(row["id"], json.dumps(prep_to_dict(prep), ensure_ascii=False))
+            else:
+                set_status(row["id"], result.recommendation or "SKIP", "Re-scored from full live job description.")
+            refreshed.append(detail)
+
+        return refreshed
+
     def _target_preference_ok(self, job: FoundJob, profile: dict) -> bool:
         targeting = profile.get("targeting", {})
         preferred = [str(x).lower() for x in targeting.get("preferred_locations", [])]
@@ -819,33 +1040,51 @@ class NaukriAgent:
     def ingest(self, jobs: list[FoundJob]) -> list[FoundJob]:
         added: list[FoundJob] = []
         from .cli import load_profile
+
         profile = load_profile()
-        for job in jobs:
-            if not self._target_preference_ok(job, profile):
+        for card_job in jobs:
+            # URL identity is checked before opening the detail page so repeated
+            # searches do not waste time refreshing the same listing.
+            canonical = card_job.url.split("?")[0].rstrip("/")
+            if not canonical or ("/job-listings-" not in canonical.lower() and "/job-listings/" not in canonical.lower()):
                 continue
-            fp = fingerprint_job(job.company, job.title, job.url)
-            if find_duplicate(job.company, job.title, job.url, fp):
-                continue
-            result = score_job(job.title, job.description, job.company)
 
-            exp_blob = (job.experience or "").lower()
-            exp_range = re.search(
-                r"(\d+(?:\.\d+)?)\s*(?:-|–|to)\s*(\d+(?:\.\d+)?)\s*(?:yrs?|years?)",
-                exp_blob,
+            fp = fingerprint_job("", "", canonical)
+            duplicate = find_duplicate(card_job.company, card_job.title, canonical, fp)
+            if duplicate:
+                continue
+
+            detail = self._extract_job_detail(canonical)
+            if not detail:
+                continue
+
+            if not self._target_preference_ok(detail, profile):
+                continue
+
+            fp = fingerprint_job(detail.company, detail.title, detail.url)
+            duplicate = find_duplicate(detail.company, detail.title, detail.url, fp)
+            if duplicate:
+                continue
+
+            result = score_job(detail.title, detail.description, detail.company)
+            detail.score = result.score
+            detail.recommendation = result.recommendation
+            detail.job_id = add_job(
+                detail.company,
+                detail.title,
+                detail.url,
+                detail.description,
+                result.score,
+                result.recommendation,
+                fp,
             )
-            if exp_range and float(exp_range.group(1)) > 2.5:
-                result.score = max(0, result.score - 25)
-                result.recommendation = "SKIP" if result.score < 70 else "REVIEW"
 
-            # Lightweight location guard: don't lower the score if salary is unknown;
-            # just let preference filtering happen before application.
-            job.score = result.score
-            job.recommendation = result.recommendation
-            job.job_id = add_job(job.company, job.title, job.url, job.description, result.score, result.recommendation, fp)
             if result.score >= profile["targeting"]["minimum_match_score_for_review"]:
-                prep = prepare_application(job.title, job.description, profile, job.company)
-                save_prep(job.job_id, json.dumps(prep_to_dict(prep), ensure_ascii=False))
-            added.append(job)
+                prep = prepare_application(detail.title, detail.description, profile, detail.company)
+                save_prep(detail.job_id, json.dumps(prep_to_dict(prep), ensure_ascii=False))
+
+            added.append(detail)
+
         return added
 
     def scan_default(self, max_queries: int = 6, per_query: int = 12) -> list[FoundJob]:
