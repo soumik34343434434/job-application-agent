@@ -100,26 +100,42 @@ def cmd_naukri_setup_browser(args):
     print("Dedicated Naukri Chrome opened.")
 
 def cmd_naukri_login(args):
-    from .naukri import NaukriAgent, AGENT_BROWSER_DIR
+    from .naukri import (
+        NaukriAgent,
+        AGENT_BROWSER_DIR,
+        setup_agent_browser,
+    )
 
-    print("Launching the dedicated Naukri browser profile.")
+    print("Checking the dedicated Naukri browser profile.")
     print(f"Persistent profile: {AGENT_BROWSER_DIR}")
     print("Your normal Chrome profile remains untouched.")
 
+    # First verify the saved session without attempting Google authentication.
     agent = NaukriAgent(headless=False, slow_mo=args.slow_mo)
     try:
         agent.__enter__()
         try:
-            agent.ensure_logged_in()
-            print("Naukri login/session confirmed.")
-            print("The dedicated Naukri browser stays open. Press Enter here when you want to close it.")
-            input()
+            agent.page.goto("https://www.naukri.com/", wait_until="domcontentloaded")
+            agent.page.wait_for_timeout(1200)
+            if agent.is_logged_in():
+                print("Naukri session is already authenticated.")
+                print("The dedicated automation browser is ready.")
+                print("Press Enter here when you want to close it.")
+                input()
+                return
         finally:
             agent.__exit__(None, None, None)
     except Exception as exc:
-        print(f"\nNaukri agent could not start or verify the session: {exc}")
-        print("Your normal Chrome profile is unaffected.")
-        raise
+        print(f"Session check could not use the dedicated profile: {exc}")
+
+    print()
+    print("Naukri is not logged in in the dedicated profile.")
+    print("Opening a NORMAL Chrome window for the one-time Google login.")
+    print("Complete Naukri -> Login -> Sign in with Google there.")
+    print("After you are fully logged in, close that dedicated Chrome window.")
+    print()
+    setup_agent_browser()
+    print("Setup window opened. After closing it, run this same command again.")
 
 
 def cmd_naukri_scan(args):
