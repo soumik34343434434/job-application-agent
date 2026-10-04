@@ -26,7 +26,7 @@ jobs:
       - name: Tests
         env:
           PYTHONPATH: .
-        run: pytest -q -m "not live"
+        run: pytest -q -m "not live and not naukri_live"
 
 
   live_naukri_probe:
