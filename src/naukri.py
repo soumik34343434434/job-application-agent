@@ -415,11 +415,39 @@ class NaukriAgent:
                         continue
             except Exception:
                 continue
+
+        # Current Naukri renders its header search as a custom textbox rather
+        # than a native <input> on some authenticated pages.
+        try:
+            textboxes = self.page.get_by_role("textbox")
+            for i in range(textboxes.count()):
+                loc = textboxes.nth(i)
+                try:
+                    if loc.is_visible() and loc.is_enabled():
+                        return loc
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        # Last fallback for contenteditable search widgets.
+        try:
+            editable = self.page.locator('[contenteditable="true"]')
+            for i in range(editable.count()):
+                loc = editable.nth(i)
+                try:
+                    if loc.is_visible() and loc.is_enabled():
+                        return loc
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
         return None
 
     def _fill_search_form(self, query: str, location: str) -> bool:
-        # Naukri renders hidden/duplicate inputs in the DOM. Never pick .first()
-        # blindly because the first match can be tabindex=-1 and invisible.
+        # On the current authenticated Naukri UI there may be no native <input>
+        # at all; the header "Search jobs here" control can expose role=textbox.
         skill_selectors = [
             'input[aria-label*="keyword" i]',
             'input[aria-label*="designation" i]',
@@ -428,6 +456,8 @@ class NaukriAgent:
             'input[placeholder*="Designation" i]',
             'input[placeholder*="Companies" i]',
             'input[placeholder*="search" i]',
+            '[role="textbox"][aria-label*="search" i]',
+            '[contenteditable="true"][aria-label*="search" i]',
         ]
         loc_selectors = [
             'input[aria-label*="location" i]',
@@ -436,25 +466,40 @@ class NaukriAgent:
             'input[placeholder*="city" i]',
         ]
 
-        skill = self._first_visible_editable(skill_selectors)
+        # Do not assume the first textbox is the keyword field when the page has
+        # other editable controls. Prefer one whose accessible name/placeholder
+        # indicates search.
+        skill = None
+        preferred = [
+            '[role="textbox"][aria-label*="search" i]',
+            '[role="textbox"][placeholder*="search" i]',
+            '[contenteditable="true"][aria-label*="search" i]',
+        ]
+        skill = self._first_visible_editable(preferred) or self._first_visible_editable(skill_selectors)
+
+        # The current header search may be a single free-text box with query and
+        # location entered together. If a separate location control exists, use it.
         loc_field = self._first_visible_editable(loc_selectors)
 
-        if not skill or not loc_field:
+        if not skill:
             return False
 
         try:
             skill.click()
             skill.fill(query)
-            self.page.wait_for_timeout(500)
-            loc_field.click()
-            loc_field.fill(location)
-            self.page.wait_for_timeout(500)
+            self.page.wait_for_timeout(400)
         except Exception:
             return False
 
-        # Location/type-ahead controls can require a dropdown selection before
-        # Naukri accepts the search. Prefer an exact visible suggestion, then
-        # fall back to pressing Enter.
+        if loc_field:
+            try:
+                loc_field.click()
+                loc_field.fill(location)
+                self.page.wait_for_timeout(500)
+            except Exception:
+                pass
+
+        # Select an exact visible location suggestion when Naukri exposes one.
         if location:
             try:
                 suggestions = self.page.get_by_text(
@@ -471,10 +516,13 @@ class NaukriAgent:
             except Exception:
                 pass
 
+        # Prefer a visible Search control. Current Naukri may render the icon
+        # with no button text, so also use accessible name/aria-label.
         buttons = [
             self.page.get_by_role("button", name=re.compile(r"^search$", re.I)),
+            self.page.get_by_role("button", name=re.compile(r"search", re.I)),
             self.page.locator('button[aria-label*="search" i]'),
-            self.page.locator('button[type="submit"]'),
+            self.page.locator('[role="button"][aria-label*="search" i]'),
         ]
         for button in buttons:
             try:
@@ -483,120 +531,20 @@ class NaukriAgent:
                     candidate = button.nth(i)
                     if candidate.is_visible() and candidate.is_enabled():
                         candidate.click()
-                        self.page.wait_for_timeout(1800)
+                        self.page.wait_for_timeout(2500)
                         return True
             except Exception:
                 continue
 
+        # If the search widget is an editor without a button, Enter is the
+        # safest way to submit it.
         try:
-            loc_field.press("Enter")
-            self.page.wait_for_timeout(1800)
+            skill.press("Enter")
+            self.page.wait_for_timeout(2500)
             return True
         except Exception:
             return False
 
-
-    def _set_relevance_sort(self):
-        """Prefer Naukri relevance over personalized ranking when the control exists."""
-        for context in self._all_contexts():
-            try:
-                personalized = context.get_by_text(
-                    re.compile(r"^personalized$", re.I)
-                )
-                for i in range(personalized.count()):
-                    item = personalized.nth(i)
-                    if not item.is_visible():
-                        continue
-                    item.click()
-                    self.page.wait_for_timeout(300)
-                    relevance = context.get_by_text(
-                        re.compile(r"^relevance$", re.I)
-                    )
-                    for j in range(relevance.count()):
-                        option = relevance.nth(j)
-                        if option.is_visible():
-                            option.click()
-                            self.page.wait_for_timeout(900)
-                            return True
-            except Exception:
-                continue
-        return False
-
-    def _search_results_ready(self) -> bool:
-        text = self._body_text()
-        return (
-            ("jobs found" in text or "job found" in text)
-            and self.page.locator('a[href*="job-listings"], a[href*="/job/"]').count() > 0
-        )
-
-    def inspect_current_page(self) -> dict:
-        """Collect current visible Naukri UI metadata without navigating."""
-        info = {
-            "url": self.page.url,
-            "title": "",
-            "inputs": [],
-            "buttons": [],
-            "links": [],
-            "headings": [],
-        }
-        try:
-            info["title"] = self.page.title()
-        except Exception:
-            pass
-
-        try:
-            for i in range(min(self.page.locator("input").count(), 80)):
-                el = self.page.locator("input").nth(i)
-                if el.is_visible():
-                    info["inputs"].append({
-                        "type": el.get_attribute("type"),
-                        "placeholder": el.get_attribute("placeholder"),
-                        "aria": el.get_attribute("aria-label"),
-                        "name": el.get_attribute("name"),
-                        "value": el.input_value(),
-                    })
-        except Exception:
-            pass
-
-        try:
-            for i in range(min(self.page.locator("button").count(), 120)):
-                el = self.page.locator("button").nth(i)
-                if el.is_visible():
-                    info["buttons"].append(
-                        re.sub(r"\s+", " ", (el.inner_text() or "")).strip()
-                    )
-        except Exception:
-            pass
-
-        try:
-            for i in range(min(self.page.locator("a[href]").count(), 250)):
-                el = self.page.locator("a[href]").nth(i)
-                if not el.is_visible():
-                    continue
-                href = el.get_attribute("href") or ""
-                text = re.sub(r"\s+", " ", (el.inner_text() or "")).strip()
-                if href and (text or "job" in href.lower()):
-                    info["links"].append({
-                        "text": text[:160],
-                        "href": href[:500],
-                    })
-        except Exception:
-            pass
-
-        try:
-            for i in range(min(self.page.locator("h1,h2,h3").count(), 80)):
-                el = self.page.locator("h1,h2,h3").nth(i)
-                if el.is_visible():
-                    text = re.sub(r"\s+", " ", (el.inner_text() or "")).strip()
-                    if text:
-                        info["headings"].append(text[:200])
-        except Exception:
-            pass
-
-        # Save a full screenshot so the inspected state can be correlated with
-        # what the user sees, without changing the page.
-        info["screenshot"] = str(self._artifact("naukri_current_page_inspect"))
-        return info
 
     def search(self, query: str, location: str = "") -> list[FoundJob]:
         self.ensure_logged_in()
