@@ -898,6 +898,16 @@ class NaukriAgent:
                 )
                 if experience_match:
                     experience = self._clean_text(experience_match.group(1))
+
+            # Some Naukri postings express the requirement as prose, e.g.
+            # "minimum of 2+ years" instead of a labeled metadata field.
+            if not experience:
+                experience_match = re.search(
+                    r"(?i)(?:minimum\s+of|at\s+least)\s+(\d+(?:\.\d+)?\s*\+\s*(?:yrs?|years?)|\d+(?:\.\d+)?\s*(?:-|–|to)\s*\d+(?:\.\d+)?\s*(?:yrs?|years?))",
+                    body,
+                )
+                if experience_match:
+                    experience = self._clean_text(experience_match.group(1))
             if not salary:
                 salary_match = re.search(
                     r"(?i)(?:salary|ctc|compensation)\s*:\s*([^\n|]{2,80})",
