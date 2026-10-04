@@ -222,29 +222,39 @@ class NaukriAgent:
         input()
 
     def is_logged_in(self) -> bool:
-        url = self.page.url.lower()
-        if "/nlogin/" in url:
-            return False
-        # Login forms are the strongest unauthenticated signal.
+        """Use an authenticated jobseeker route as the primary session check."""
         try:
-            if self.page.locator('input[type="password"]').count() > 0:
-                return False
-        except Exception:
-            pass
-        text = self._body_text()
+            current_url = self.page.url
+            self.page.goto(
+                "https://www.naukri.com/mnjuser/profile",
+                wait_until="domcontentloaded",
+                timeout=15000,
+            )
+            self.page.wait_for_timeout(1000)
 
-        # The public Naukri homepage is also on naukri.com, so the domain alone
-        # is NOT evidence that the user is authenticated.
-        authenticated_markers = (
-            "my naukri",
-            "my profile",
-            "view profile",
-            "logout",
-            "sign out",
-        )
-        if any(marker in text for marker in authenticated_markers):
-            return True
-        return False
+            url = self.page.url.lower()
+            text = self._body_text()
+
+            # A redirect to Naukri login is the strongest unauthenticated signal.
+            if "/nlogin/" in url or "/login" in url and "naukri.com" in url:
+                return False
+
+            # Naukri's jobseeker area is under /mnjuser; reaching it without a
+            # login redirect is stronger evidence than generic homepage labels.
+            if "/mnjuser/" in url:
+                return True
+
+            authenticated_markers = (
+                "my naukri",
+                "my profile",
+                "view profile",
+                "logout",
+                "sign out",
+            )
+            return any(marker in text for marker in authenticated_markers)
+        except Exception:
+            return False
+
 
     def open_home(self):
         self.page.goto(NAUKRI_HOME, wait_until="domcontentloaded")
