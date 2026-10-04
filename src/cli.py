@@ -175,6 +175,43 @@ def cmd_naukri_enrich(args):
         print_jobs(jobs)
 
 
+def cmd_naukri_job_detail(args):
+    from .naukri import NaukriAgent
+    from .cli import load_profile
+    import json as _json
+
+    row = get_job(args.job_id)
+    if not row:
+        raise SystemExit(f"Job #{args.job_id} not found.")
+    if not row["url"] or "/job-listings-" not in row["url"].lower():
+        raise SystemExit("The selected record is not a real Naukri job-listing URL.")
+
+    with NaukriAgent(headless=False, slow_mo=args.slow_mo) as agent:
+        job = agent._extract_job_detail(row["url"])
+        if not job:
+            raise SystemExit("Could not extract a complete live job detail page.")
+        profile = load_profile()
+        result = score_job(job.title, job.description, job.company)
+
+    payload = {
+        "job_id": row["id"],
+        "url": job.url,
+        "title": job.title,
+        "company": job.company,
+        "location": job.location,
+        "salary": job.salary,
+        "experience": job.experience,
+        "description_length": len(job.description or ""),
+        "description": job.description,
+        "score": result.score,
+        "recommendation": result.recommendation,
+        "matched": result.matched,
+        "penalties": result.penalties,
+        "reasons": result.reasons,
+    }
+    print(_json.dumps(payload, indent=2, ensure_ascii=False))
+
+
 def cmd_naukri_apply(args):
     from .naukri import NaukriAgent
     with NaukriAgent(headless=False, slow_mo=args.slow_mo) as agent:
@@ -228,6 +265,7 @@ def main():
     x = ns.add_parser("scan"); x.add_argument("--max-queries", type=int, default=6); x.add_argument("--per-query", type=int, default=12); x.add_argument("--slow-mo", type=int, default=150); x.set_defaults(func=cmd_naukri_scan)
     x = ns.add_parser("apply"); x.add_argument("--limit", type=int, default=10); x.add_argument("--auto-submit", action="store_true", help="Actually submit forms; omit for prepare-only mode."); x.add_argument("--slow-mo", type=int, default=150); x.set_defaults(func=cmd_naukri_apply)
     x = ns.add_parser("enrich"); x.add_argument("--limit", type=int, default=30); x.add_argument("--slow-mo", type=int, default=150); x.set_defaults(func=cmd_naukri_enrich)
+    x = ns.add_parser("job-detail"); x.add_argument("--job-id", type=int, required=True); x.add_argument("--slow-mo", type=int, default=150); x.set_defaults(func=cmd_naukri_job_detail)
 
     x = ns.add_parser("autopilot"); x.add_argument("--scan-queries", type=int, default=4); x.add_argument("--per-query", type=int, default=12); x.add_argument("--limit", type=int, default=10); x.add_argument("--auto-submit", action="store_true", help="Actually submit forms; omit for prepare-only mode."); x.add_argument("--slow-mo", type=int, default=150); x.set_defaults(func=cmd_naukri_autopilot)
 
