@@ -243,7 +243,8 @@ def score_job(title: str, description: str, company: str = "") -> ScoreResult:
             role_hits.append(family)
 
     if role_hits:
-        # A single exact target-role-family match is strong evidence because the\n        # profile is already constrained to security-focused roles.\n        score += min(25, 20 + 5 * len(role_hits))
+        # A single exact target-role-family match is strong evidence because the
+        # profile is already constrained to security-focused roles.
         matched.extend(role_hits)
         reasons.append("Job title belongs to a target security role family.")
 
