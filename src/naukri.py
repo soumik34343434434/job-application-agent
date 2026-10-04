@@ -382,57 +382,105 @@ class NaukriAgent:
             return "ACCOUNT_CREATED_OR_CONFIRMED"
         return "REGISTRATION_NEEDS_ATTENTION"
 
+    def _first_visible_editable(self, selectors: list[str]):
+        """Return the first visible, enabled text control matching any selector."""
+        for selector in selectors:
+            try:
+                locs = self.page.locator(selector)
+                count = locs.count()
+                for i in range(count):
+                    loc = locs.nth(i)
+                    try:
+                        if loc.is_visible() and loc.is_enabled():
+                            return loc
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+        return None
+
     def _fill_search_form(self, query: str, location: str) -> bool:
+        # Naukri renders hidden/duplicate inputs in the DOM. Never pick .first()
+        # blindly because the first match can be tabindex=-1 and invisible.
         skill_selectors = [
+            'input[aria-label*="keyword" i]',
+            'input[aria-label*="designation" i]',
+            'input[placeholder*="Enter keyword" i]',
             'input[placeholder*="Skills" i]',
             'input[placeholder*="Designation" i]',
             'input[placeholder*="Companies" i]',
             'input[placeholder*="search" i]',
         ]
         loc_selectors = [
+            'input[aria-label*="location" i]',
             'input[placeholder*="Location" i]',
             'input[placeholder*="locality" i]',
+            'input[placeholder*="city" i]',
         ]
-        skill = None
-        for sel in skill_selectors:
-            try:
-                loc = self.page.locator(sel)
-                if loc.count():
-                    skill = loc.first
-                    break
-            except Exception:
-                pass
-        loc_field = None
-        for sel in loc_selectors:
-            try:
-                loc = self.page.locator(sel)
-                if loc.count():
-                    loc_field = loc.first
-                    break
-            except Exception:
-                pass
+
+        skill = self._first_visible_editable(skill_selectors)
+        loc_field = self._first_visible_editable(loc_selectors)
+
         if not skill or not loc_field:
             return False
-        skill.fill(query)
-        self.page.wait_for_timeout(300)
+
         try:
+            skill.click()
+            skill.fill(query)
+            self.page.wait_for_timeout(500)
+            loc_field.click()
             loc_field.fill(location)
+            self.page.wait_for_timeout(500)
         except Exception:
-            pass
-        self.page.wait_for_timeout(300)
-        try:
-            self.page.get_by_role("button", name=re.compile(r"^search$", re.I)).first.click()
-        except Exception:
+            return False
+
+        # Location/type-ahead controls can require a dropdown selection before
+        # Naukri accepts the search. Prefer an exact visible suggestion, then
+        # fall back to pressing Enter.
+        if location:
             try:
-                self.page.locator('button[type="submit"]').first.click()
+                suggestions = self.page.get_by_text(
+                    re.compile(rf"^{re.escape(location)}$", re.I)
+                )
+                for i in range(suggestions.count()):
+                    candidate = suggestions.nth(i)
+                    try:
+                        if candidate.is_visible():
+                            candidate.click()
+                            break
+                    except Exception:
+                        continue
             except Exception:
-                return False
-        self.page.wait_for_timeout(1800)
-        return True
+                pass
+
+        buttons = [
+            self.page.get_by_role("button", name=re.compile(r"^search$", re.I)),
+            self.page.locator('button[aria-label*="search" i]'),
+            self.page.locator('button[type="submit"]'),
+        ]
+        for button in buttons:
+            try:
+                count = button.count()
+                for i in range(count):
+                    candidate = button.nth(i)
+                    if candidate.is_visible() and candidate.is_enabled():
+                        candidate.click()
+                        self.page.wait_for_timeout(1800)
+                        return True
+            except Exception:
+                continue
+
+        try:
+            loc_field.press("Enter")
+            self.page.wait_for_timeout(1800)
+            return True
+        except Exception:
+            return False
+
 
     def search(self, query: str, location: str = "") -> list[FoundJob]:
         self.ensure_logged_in()
-        self.page.goto("https://www.naukri.com/search", wait_until="domcontentloaded")
+        self.page.goto(NAUKRI_HOME, wait_until="domcontentloaded")
         self.page.wait_for_timeout(1000)
         searched = self._fill_search_form(query, location)
         if not searched:
