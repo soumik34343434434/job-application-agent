@@ -525,139 +525,94 @@ class NaukriAgent:
                 count = locs.count()
                 for i in range(count):
                     loc = locs.nth(i)
-                    try:
-                        if loc.is_visible() and loc.is_enabled():
-                            return loc
-                    except Exception:
-                        continue
+                    if loc.is_visible() and loc.is_enabled():
+                        return loc
             except Exception:
                 continue
-
-        # Current Naukri renders its header search as a custom textbox rather
-        # than a native <input> on some authenticated pages.
-        try:
-            textboxes = self.page.get_by_role("textbox")
-            for i in range(textboxes.count()):
-                loc = textboxes.nth(i)
-                try:
-                    if loc.is_visible() and loc.is_enabled():
-                        return loc
-                except Exception:
-                    continue
-        except Exception:
-            pass
-
-        # Last fallback for contenteditable search widgets.
-        try:
-            editable = self.page.locator('[contenteditable="true"]')
-            for i in range(editable.count()):
-                loc = editable.nth(i)
-                try:
-                    if loc.is_visible() and loc.is_enabled():
-                        return loc
-                except Exception:
-                    continue
-        except Exception:
-            pass
-
         return None
 
     def _fill_search_form(self, query: str, location: str) -> bool:
-        # On the current authenticated Naukri UI there may be no native <input>
-        # at all; the header "Search jobs here" control can expose role=textbox.
-        skill_selectors = [
-            'input[aria-label*="keyword" i]',
-            'input[aria-label*="designation" i]',
-            'input[placeholder*="Enter keyword" i]',
-            'input[placeholder*="Skills" i]',
-            'input[placeholder*="Designation" i]',
-            'input[placeholder*="Companies" i]',
-            'input[placeholder*="search" i]',
-            '[role="textbox"][aria-label*="search" i]',
-            '[contenteditable="true"][aria-label*="search" i]',
-        ]
-        loc_selectors = [
-            'input[aria-label*="location" i]',
-            'input[placeholder*="Location" i]',
-            'input[placeholder*="locality" i]',
-            'input[placeholder*="city" i]',
-        ]
+        # Current authenticated Naukri homepage: expand "Search jobs here",
+        # then fill the three visible search controls reported by inspect-search.
+        self.activate_header_search()
+        self.page.wait_for_timeout(500)
 
-        # Do not assume the first textbox is the keyword field when the page has
-        # other editable controls. Prefer one whose accessible name/placeholder
-        # indicates search.
-        skill = None
-        preferred = [
-            '[role="textbox"][aria-label*="search" i]',
-            '[role="textbox"][placeholder*="search" i]',
-            '[contenteditable="true"][aria-label*="search" i]',
-        ]
-        skill = self._first_visible_editable(preferred) or self._first_visible_editable(skill_selectors)
+        try:
+            keyword = self.page.locator(
+                'input[placeholder="Enter keyword / designation / companies"]'
+            )
+            keyword = next(
+                (
+                    keyword.nth(i)
+                    for i in range(keyword.count())
+                    if keyword.nth(i).is_visible() and keyword.nth(i).is_enabled()
+                ),
+                None,
+            )
+        except Exception:
+            keyword = None
 
-        # The current header search may be a single free-text box with query and
-        # location entered together. If a separate location control exists, use it.
-        loc_field = self._first_visible_editable(loc_selectors)
+        try:
+            location_field = self.page.locator('input[placeholder="Enter location"]')
+            location_field = next(
+                (
+                    location_field.nth(i)
+                    for i in range(location_field.count())
+                    if location_field.nth(i).is_visible() and location_field.nth(i).is_enabled()
+                ),
+                None,
+            )
+        except Exception:
+            location_field = None
 
-        if not skill:
+        if not keyword or not location_field:
             return False
 
         try:
-            skill.click()
-            skill.fill(query)
+            keyword.fill(query)
             self.page.wait_for_timeout(400)
+            location_field.fill(location)
+            self.page.wait_for_timeout(800)
         except Exception:
             return False
 
-        if loc_field:
-            try:
-                loc_field.click()
-                loc_field.fill(location)
-                self.page.wait_for_timeout(500)
-            except Exception:
-                pass
-
-        # Select an exact visible location suggestion when Naukri exposes one.
-        if location:
-            try:
-                suggestions = self.page.get_by_text(
-                    re.compile(rf"^{re.escape(location)}$", re.I)
-                )
-                for i in range(suggestions.count()):
-                    candidate = suggestions.nth(i)
-                    try:
-                        if candidate.is_visible():
-                            candidate.click()
-                            break
-                    except Exception:
-                        continue
-            except Exception:
-                pass
-
-        # Prefer a visible Search control. Current Naukri may render the icon
-        # with no button text, so also use accessible name/aria-label.
-        buttons = [
-            self.page.get_by_role("button", name=re.compile(r"^search$", re.I)),
-            self.page.get_by_role("button", name=re.compile(r"search", re.I)),
-            self.page.locator('button[aria-label*="search" i]'),
-            self.page.locator('[role="button"][aria-label*="search" i]'),
-        ]
-        for button in buttons:
-            try:
-                count = button.count()
-                for i in range(count):
-                    candidate = button.nth(i)
-                    if candidate.is_visible() and candidate.is_enabled():
-                        candidate.click()
-                        self.page.wait_for_timeout(2500)
-                        return True
-            except Exception:
-                continue
-
-        # If the search widget is an editor without a button, Enter is the
-        # safest way to submit it.
+        # Choose the current location suggestion, if presented.
         try:
-            skill.press("Enter")
-            self.page.wait_for_timeout(2500)
+            suggestions = self.page.get_by_text(re.compile(rf"^{re.escape(location)}$", re.I))
+            for i in range(suggestions.count()):
+                candidate = suggestions.nth(i)
+                if candidate.is_visible() and candidate.is_enabled():
+                    candidate.click()
+                    break
+        except Exception:
+            pass
+
+        # The inspected UI exposes a visible Search button.
+        try:
+            buttons = self.page.locator("button.nI-gNb-sb__icon-wrapper")
+            for i in range(buttons.count()):
+                candidate = buttons.nth(i)
+                if candidate.is_visible() and candidate.is_enabled():
+                    candidate.click()
+                    self.page.wait_for_timeout(3500)
+                    return True
+        except Exception:
+            pass
+
+        try:
+            search = self.page.get_by_role("button", name=re.compile(r"^search$", re.I))
+            for i in range(search.count()):
+                candidate = search.nth(i)
+                if candidate.is_visible() and candidate.is_enabled():
+                    candidate.click()
+                    self.page.wait_for_timeout(3500)
+                    return True
+        except Exception:
+            pass
+
+        try:
+            keyword.press("Enter")
+            self.page.wait_for_timeout(3500)
             return True
         except Exception:
             return False
@@ -669,22 +624,14 @@ class NaukriAgent:
         self.page.wait_for_timeout(1200)
 
         searched = self._fill_search_form(query, location)
-        if searched:
-            self.page.wait_for_timeout(1800)
-            self._set_relevance_sort()
 
-        # Keep the URL fallback, but only as a recovery path. Naukri still exposes
-        # /search for job search, while the visible search UI is the canonical way
-        # to establish the query and location in the current page state.
-        if not searched or not self._search_results_ready():
-            url = f"https://www.naukri.com/search?keyword={quote_plus(query)}"
-            if location:
-                url += f"&location={quote_plus(location)}"
-            self.page.goto(url, wait_until="domcontentloaded")
-            self.page.wait_for_timeout(4000)
-            self._set_relevance_sort()
-            # Give client-side result cards one more chance to render.
-            self.page.wait_for_timeout(2500)
+        if not searched:
+            raise RuntimeError(
+                "Could not use the current Naukri header search UI. "
+                "Open Naukri homepage and run 'naukri inspect-search' for diagnostics."
+            )
+
+        self._set_relevance_sort()
 
         if self.needs_human_verification():
             self.wait_for_human("Naukri presented CAPTCHA/security verification during search")
