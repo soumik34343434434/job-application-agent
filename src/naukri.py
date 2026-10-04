@@ -152,9 +152,19 @@ class NaukriAgent:
         except Exception:
             pass
         text = self._body_text()
-        if any(x in text for x in ("my naukri", "my profile", "view profile", "logout", "sign out")):
+
+        # The public Naukri homepage is also on naukri.com, so the domain alone
+        # is NOT evidence that the user is authenticated.
+        authenticated_markers = (
+            "my naukri",
+            "my profile",
+            "view profile",
+            "logout",
+            "sign out",
+        )
+        if any(marker in text for marker in authenticated_markers):
             return True
-        return "naukri.com" in url and "/nlogin/" not in url
+        return False
 
     def open_home(self):
         self.page.goto(NAUKRI_HOME, wait_until="domcontentloaded")
