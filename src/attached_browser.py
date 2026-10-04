@@ -118,6 +118,16 @@ class AttachedChrome:
         except json.JSONDecodeError as exc:
             raise RuntimeError(f"Could not parse browser state: {raw}") from exc
 
+    def click_google_sign_in(self) -> bool:
+        expr = """() => {
+          const els = [...document.querySelectorAll('button,a,[role="button"]')];
+          const el = els.find(e => /google/i.test((e.innerText || '') + ' ' + (e.getAttribute('aria-label') || '')));
+          if (!el) return false;
+          el.click();
+          return true;
+        }"""
+        return self.eval(expr) == "true"
+
     def is_naukri_logged_in(self) -> bool:
         info = self.page_info()
         url = str(info.get("url", "")).lower()
