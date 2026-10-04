@@ -449,37 +449,90 @@ class NaukriAgent:
 
     def activate_header_search(self) -> bool:
         """Open the current authenticated Naukri header search control."""
+        # On the authenticated homepage the search form is already present in
+        # the DOM, but collapsed behind .nI-gNb-sb__main. The searchAppWrapper
+        # class belongs to the unrelated "Search appearances" section.
         candidates = [
+            self.page.locator("div.nI-gNb-sb__main"),
+            self.page.locator(".nI-gNb-sb__placeholder"),
             self.page.get_by_text(re.compile(r"^search jobs here$", re.I)),
-            self.page.get_by_role("button", name=re.compile(r"search jobs here|search", re.I)),
-            self.page.locator('[aria-label*="search jobs here" i]'),
-            self.page.locator('[placeholder*="search jobs here" i]'),
-            # Current logged-in Naukri homepage uses a wrapper around the
-            # collapsed search launcher; text-based locators can land on a
-            # sibling ("Search appearances") instead of the clickable wrapper.
-            self.page.locator('div.searchAppWrapper'),
-            self.page.locator('[class*="searchAppWrapper"]'),
+            self.page.get_by_role("button", name=re.compile(r"^search$", re.I)),
         ]
+
+        def search_controls_visible() -> bool:
+            try:
+                selectors = [
+                    'input[placeholder="Enter keyword / designation / companies"]',
+                    'input[placeholder="Select experience"]',
+                    'input[placeholder="Enter location"]',
+                ]
+                for selector in selectors:
+                    loc = self.page.locator(selector)
+                    if not any(
+                        loc.nth(i).is_visible() and loc.nth(i).is_enabled()
+                        for i in range(loc.count())
+                    ):
+                        return False
+                return True
+            except Exception:
+                return False
+
         for loc in candidates:
             try:
                 for i in range(min(loc.count(), 20)):
                     candidate = loc.nth(i)
                     if not candidate.is_visible() or not candidate.is_enabled():
                         continue
+
                     candidate.scroll_into_view_if_needed()
-                    candidate.click(position={"x": max(1, min(20, int(candidate.bounding_box()["width"] / 2))) if candidate.bounding_box() else 5,
-                                    "y": max(1, min(20, int(candidate.bounding_box()["height"] / 2))) if candidate.bounding_box() else 5})
-                    self.page.wait_for_timeout(700)
-                    # Success is defined by the actual search controls appearing.
-                    if self.page.locator('input[placeholder="Enter keyword / designation / companies"]').count():
-                        return True
-                    # Some builds animate the inputs in after the click.
+                    box = candidate.bounding_box()
+                    if not box:
+                        continue
+
+                    # Prefer a normal Playwright click, then the actual center
+                    # of the live wrapper, then a DOM click for React handlers.
+                    clicked = False
+                    try:
+                        candidate.click(timeout=5000)
+                        clicked = True
+                    except Exception:
+                        pass
+
+                    if not clicked:
+                        try:
+                            self.page.mouse.click(
+                                box["x"] + box["width"] / 2,
+                                box["y"] + box["height"] / 2,
+                            )
+                            clicked = True
+                        except Exception:
+                            pass
+
+                    if not clicked:
+                        try:
+                            candidate.evaluate("(e) => e.click()")
+                        except Exception:
+                            continue
+
                     self.page.wait_for_timeout(500)
-                    if self.page.locator('input[placeholder="Enter keyword / designation / companies"]').count():
+                    if search_controls_visible():
                         return True
+
+                    # Some Naukri builds attach the click handler one level
+                    # above/below the text node. Try the wrapper itself.
+                    try:
+                        wrapper = candidate.locator("xpath=..")
+                        if wrapper.count() and wrapper.first.is_visible():
+                            wrapper.first.click(timeout=5000)
+                            self.page.wait_for_timeout(500)
+                            if search_controls_visible():
+                                return True
+                    except Exception:
+                        pass
             except Exception:
                 continue
-        return False
+
+        return search_controls_visible()
 
     def inspect_search_control(self) -> dict:
         """Inspect the current header search control and its opened state."""
