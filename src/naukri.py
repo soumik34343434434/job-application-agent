@@ -34,8 +34,10 @@ ARTIFACT_DIR = ROOT / "outbox" / "browser_artifacts"
 BASE_RESUME = ROOT / "data" / "resumes" / "01_General_Cybersecurity_Analyst.pdf"
 NAUKRI_HOME = "https://www.naukri.com/"
 
-MAC_CHROME_USER_DATA = Path.home() / "Library" / "Application Support" / "Google" / "Chrome"
-DEFAULT_CHROME_PROFILE_NAME = os.getenv("CHROME_PROFILE_NAME", "soumikp922")
+# Dedicated browser data owned by this agent. This is intentionally separate
+# from the user's normal Chrome profile so the agent can run without taking over
+# the user's everyday browser.
+AGENT_BROWSER_DIR = ROOT / ".browser" / "naukri_agent"
 
 DEFAULT_QUERIES = [
     "Cybersecurity Engineer",
@@ -89,78 +91,28 @@ class NaukriAgent:
         self.browser_user_data_dir = None
         self.browser_profile_dir = None
 
-    def _resolve_chrome_profile(self) -> tuple[Path, str | None]:
-        data_dir = Path(
-            os.getenv("CHROME_USER_DATA_DIR", str(MAC_CHROME_USER_DATA))
-        ).expanduser()
-        requested = os.getenv("CHROME_PROFILE_NAME", DEFAULT_CHROME_PROFILE_NAME)
-
-        if not data_dir.exists():
-            return data_dir, os.getenv("CHROME_PROFILE_DIR")
-
-        local_state = data_dir / "Local State"
-        if local_state.exists():
-            try:
-                state = json.loads(local_state.read_text(encoding="utf-8"))
-                info_cache = state.get("profile", {}).get("info_cache", {})
-                for directory, info in info_cache.items():
-                    candidates = [
-                        str(info.get("name", "")),
-                        str(info.get("shortcut_name", "")),
-                        str(info.get("user_name", "")),
-                        str(info.get("gaia_name", "")),
-                        str(info.get("gaia_given_name", "")),
-                    ]
-                    exact = [x for x in candidates if x.strip().casefold() == requested.strip().casefold()]
-                    partial = [x for x in candidates if requested.strip().casefold() in x.casefold()]
-                    if exact or partial:
-                        return data_dir, directory
-            except Exception:
-                pass
-
-        direct = os.getenv("CHROME_PROFILE_DIR")
-        if direct:
-            return data_dir, direct
-
-        raise RuntimeError(
-            f'Chrome profile "{requested}" was not found under {data_dir}. '
-            'Set CHROME_PROFILE_NAME to the exact Chrome profile name or '
-            'CHROME_PROFILE_DIR to the profile directory (for example "Profile 2").'
-        )
-
     def __enter__(self):
         ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+        AGENT_BROWSER_DIR.mkdir(parents=True, exist_ok=True)
         self._pw = sync_playwright().start()
 
-        use_existing_chrome = os.getenv(
-            "USE_EXISTING_CHROME_PROFILE", "1"
-        ).lower() not in ("0", "false", "no")
-
-        if use_existing_chrome:
-            self.browser_user_data_dir, self.browser_profile_dir = self._resolve_chrome_profile()
-            user_data_dir = self.browser_user_data_dir
-        else:
-            BROWSER_DIR.mkdir(parents=True, exist_ok=True)
-            user_data_dir = BROWSER_DIR
-
+        # Use a dedicated persistent Chrome profile. The user can complete
+        # Google Sign-In once inside this profile; subsequent runs reuse the
+        # persisted Naukri session without touching the user's normal Chrome.
         launch_kwargs = dict(
             headless=self.headless,
             slow_mo=self.slow_mo,
             viewport={"width": 1440, "height": 1000},
             accept_downloads=True,
+            channel=os.getenv("BROWSER_CHANNEL", "chrome"),
         )
 
         executable = os.getenv("BROWSER_EXECUTABLE_PATH")
         if executable:
             launch_kwargs["executable_path"] = executable
-        else:
-            launch_kwargs["channel"] = os.getenv("BROWSER_CHANNEL", "chrome")
-
-        if use_existing_chrome and self.browser_profile_dir:
-            launch_kwargs["args"] = [f"--profile-directory={self.browser_profile_dir}"]
 
         self.context = self._pw.chromium.launch_persistent_context(
-            str(user_data_dir),
+            str(AGENT_BROWSER_DIR),
             **launch_kwargs,
         )
         self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
