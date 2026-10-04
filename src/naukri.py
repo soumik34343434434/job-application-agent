@@ -400,6 +400,95 @@ class NaukriAgent:
             return "ACCOUNT_CREATED_OR_CONFIRMED"
         return "REGISTRATION_NEEDS_ATTENTION"
 
+    def activate_header_search(self) -> bool:
+        """Open the current authenticated Naukri header search control."""
+        candidates = [
+            self.page.get_by_text(re.compile(r"^search jobs here$", re.I)),
+            self.page.get_by_role("button", name=re.compile(r"search jobs here|search", re.I)),
+            self.page.locator('[aria-label*="search jobs here" i]'),
+            self.page.locator('[placeholder*="search jobs here" i]'),
+        ]
+        for loc in candidates:
+            try:
+                for i in range(loc.count()):
+                    candidate = loc.nth(i)
+                    if candidate.is_visible() and candidate.is_enabled():
+                        candidate.click()
+                        self.page.wait_for_timeout(700)
+                        return True
+            except Exception:
+                continue
+        return False
+
+    def inspect_search_control(self) -> dict:
+        """Inspect the current header search control and its opened state."""
+        result = {
+            "before_url": self.page.url,
+            "activated": self.activate_header_search(),
+            "url": self.page.url,
+            "textboxes": [],
+            "inputs": [],
+            "search_related_elements": [],
+        }
+        try:
+            textboxes = self.page.get_by_role("textbox")
+            for i in range(min(textboxes.count(), 40)):
+                el = textboxes.nth(i)
+                if el.is_visible():
+                    result["textboxes"].append({
+                        "placeholder": el.get_attribute("placeholder"),
+                        "aria": el.get_attribute("aria-label"),
+                        "role": el.get_attribute("role"),
+                        "tag": el.evaluate("(e) => e.tagName"),
+                    })
+        except Exception:
+            pass
+
+        try:
+            inputs = self.page.locator("input")
+            for i in range(min(inputs.count(), 60)):
+                el = inputs.nth(i)
+                if el.is_visible():
+                    result["inputs"].append({
+                        "placeholder": el.get_attribute("placeholder"),
+                        "aria": el.get_attribute("aria-label"),
+                        "type": el.get_attribute("type"),
+                        "name": el.get_attribute("name"),
+                    })
+        except Exception:
+            pass
+
+        # Capture nearby DOM for anything containing the search label so we can
+        # implement against the actual current UI rather than legacy selectors.
+        try:
+            loc = self.page.get_by_text(re.compile(r"search jobs here|search", re.I))
+            for i in range(min(loc.count(), 20)):
+                el = loc.nth(i)
+                if not el.is_visible():
+                    continue
+                result["search_related_elements"].append(
+                    el.evaluate(
+                        """(e) => ({
+                          tag: e.tagName,
+                          text: (e.innerText || '').trim().slice(0, 200),
+                          aria: e.getAttribute('aria-label'),
+                          role: e.getAttribute('role'),
+                          placeholder: e.getAttribute('placeholder'),
+                          className: String(e.className || '').slice(0, 500),
+                          parent: e.parentElement ? {
+                            tag: e.parentElement.tagName,
+                            className: String(e.parentElement.className || '').slice(0, 500),
+                            role: e.parentElement.getAttribute('role')
+                          } : null
+                        })"""
+                    )
+                )
+        except Exception:
+            pass
+
+        result["screenshot"] = str(self._artifact("naukri_search_control_inspect"))
+        return result
+
     def _first_visible_editable(self, selectors: list[str]):
         """Return the first visible, enabled text control matching any selector."""
         for selector in selectors:
