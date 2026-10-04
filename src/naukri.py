@@ -114,6 +114,38 @@ class FoundJob:
 
 
 class NaukriAgent:
+    @staticmethod
+    def _clear_stale_chrome_profile_lock():
+        """Remove stale Chrome singleton locks only when no process owns this profile."""
+        profile = str(AGENT_BROWSER_DIR)
+        try:
+            result = subprocess.run(
+                ["pgrep", "-f", profile],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            pids = [p.strip() for p in result.stdout.splitlines() if p.strip()]
+        except Exception:
+            pids = []
+
+        if pids:
+            raise RuntimeError(
+                "The dedicated Naukri Chrome profile is still in use by process(es) "
+                + ", ".join(pids)
+                + ". Quit only that dedicated Naukri Chrome window/app, then retry."
+            )
+
+        # Chrome writes these singleton files into a user-data-dir. They can be
+        # left behind after an abnormal close. Never delete cookies/session data.
+        for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+            path = AGENT_BROWSER_DIR / name
+            try:
+                if path.exists() or path.is_symlink():
+                    path.unlink()
+            except OSError:
+                pass
+
     def __init__(self, headless: bool = False, slow_mo: int = 150):
         if sync_playwright is None:
             raise RuntimeError(
@@ -130,6 +162,7 @@ class NaukriAgent:
     def __enter__(self):
         ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
         AGENT_BROWSER_DIR.mkdir(parents=True, exist_ok=True)
+        self._clear_stale_chrome_profile_lock()
         self._pw = sync_playwright().start()
 
         # Use a dedicated persistent Chrome profile. The user can complete
