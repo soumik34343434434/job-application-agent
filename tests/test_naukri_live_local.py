@@ -9,6 +9,16 @@ from src.naukri_inspector import AGENT_CDP_ENDPOINT, NaukriInspector
 from src.scorer import score_job
 
 
+
+def _safe_screenshot(page, path):
+    try:
+        page.screenshot(path=str(path), full_page=True, timeout=4000, animations="disabled")
+    except Exception as exc:
+        (Path(path).with_suffix(".screenshot_error.txt")).write_text(
+            str(exc), encoding="utf-8"
+        )
+
+
 @pytest.mark.naukri_live
 def test_authenticated_naukri_browser_surface():
     """
@@ -52,10 +62,7 @@ def test_authenticated_naukri_browser_surface():
             if inspector.page is not None:
                 payload["page_info"] = inspector.page_info()
                 payload["visible_text"] = inspector.visible_text().get("text", "")[:6000]
-                inspector.page.screenshot(
-                    path=str(artifact_dir / "failure_page.png"),
-                    full_page=True,
-                )
+                _safe_screenshot(inspector.page, artifact_dir / "failure_page.png")
         except Exception as exc:
             payload["page_capture_error"] = str(exc)
 
@@ -91,10 +98,7 @@ def test_authenticated_naukri_browser_surface():
         body = inspector.visible_text().get("text", "")
         lower = body.lower()
         if any(x in lower for x in ("captcha", "security verification", "access denied")):
-            inspector.page.screenshot(
-                path=str(artifact_dir / "security_gate.png"),
-                full_page=True,
-            )
+            _safe_screenshot(inspector.page, artifact_dir / "security_gate.png")
             write_json(
                 "security_gate.json",
                 {"page": info, "text": body[:6000]},
@@ -118,10 +122,7 @@ def test_authenticated_naukri_browser_surface():
         agent.page.wait_for_timeout(1200)
 
         if agent.needs_human_verification():
-            agent.page.screenshot(
-                path=str(artifact_dir / "security_gate_after_navigation.png"),
-                full_page=True,
-            )
+            _safe_screenshot(agent.page, artifact_dir / "security_gate_after_navigation.png")
             pytest.skip("Naukri presented a CAPTCHA/security gate during the live probe.")
 
         report = agent.inspect_search_control()
@@ -129,7 +130,7 @@ def test_authenticated_naukri_browser_surface():
             json.dumps(report, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
-        agent.page.screenshot(path=str(artifact_dir / "search_surface.png"), full_page=True)
+        _safe_screenshot(agent.page, artifact_dir / "search_surface.png")
 
         inputs = report.get("inputs", [])
         placeholders = {
@@ -207,7 +208,7 @@ def test_naukri_live_search_extract_and_score():
         agent.page.wait_for_timeout(1200)
 
         if agent.needs_human_verification():
-            agent.page.screenshot(path=str(artifact_dir / "dry_run_security_gate.png"), full_page=True)
+            _safe_screenshot(agent.page, artifact_dir / "dry_run_security_gate.png")
             pytest.skip("Naukri presented a security gate before the dry-run search.")
 
         query = "Cybersecurity Engineer"
@@ -217,19 +218,19 @@ def test_naukri_live_search_extract_and_score():
             pytest.fail("Could not fill/submit the live Naukri search form.")
 
         if agent.needs_human_verification():
-            agent.page.screenshot(path=str(artifact_dir / "dry_run_search_gate.png"), full_page=True)
+            _safe_screenshot(agent.page, artifact_dir / "dry_run_search_gate.png")
             pytest.skip("Naukri presented a security gate during the dry-run search.")
 
         agent._set_relevance_sort()
         agent.page.wait_for_timeout(1200)
 
         if agent.needs_human_verification():
-            agent.page.screenshot(path=str(artifact_dir / "dry_run_sort_gate.png"), full_page=True)
+            _safe_screenshot(agent.page, artifact_dir / "dry_run_sort_gate.png")
             pytest.skip("Naukri presented a security gate after search results loaded.")
 
         jobs = agent._extract_jobs()
         if not jobs:
-            agent.page.screenshot(path=str(artifact_dir / "dry_run_no_jobs.png"), full_page=True)
+            _safe_screenshot(agent.page, artifact_dir / "dry_run_no_jobs.png")
             pytest.fail("Search returned no real Naukri job-listing URLs.")
 
         # Prevent _extract_job_detail from waiting indefinitely for a human in CI.
