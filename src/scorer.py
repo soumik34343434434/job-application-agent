@@ -2,67 +2,94 @@ import re
 from dataclasses import dataclass
 from typing import List
 
-POSITIVE_TERMS = {
-    "security engineer": 12,
-    "cybersecurity engineer": 14,
-    "cybersecurity analyst": 12,
-    "security analyst": 10,
-    "security operations": 12,
-    "security operations analyst": 12,
-    "security operations engineer": 13,
-    "endpoint security": 12,
-    "endpoint security engineer": 13,
-    "cloud security": 10,
-    "cloud security engineer": 11,
-    "detection and response": 10,
-    "incident response": 8,
-    "vulnerability management": 12,
-    "vulnerability analyst": 12,
-    "vulnerability engineer": 12,
-    "vulnerability management engineer": 14,
-    "vulnerability assessment": 9,
-    "vulnerability remediation": 9,
-    "iam analyst": 11,
-    "iam engineer": 12,
-    "identity engineer": 12,
-    "identity security": 11,
-    "identity and access management": 8,
-    "okta engineer": 11,
-    "okta administrator": 7,
-    "access management": 8,
-    "microsoft defender": 8,
-    "carbon black": 6,
-    "threatlocker": 5,
-    "mimecast": 5,
-    "netskope": 6,
-    "cloudflare": 8,
-    "qualys": 5,
-    "servicenow": 2,
-    "phishing": 5,
-    "edr": 6,
+# The candidate's verified experience is 2+ years and the strongest technical
+# signals in the stored profile are endpoint security, vulnerability management,
+# IAM/Okta, cloud/email security and security operations.
+PROFILE_SKILL_TERMS = [
+    "microsoft defender",
+    "defender",
+    "carbon black",
+    "threatlocker",
+    "edr",
+    "endpoint security",
+    "qualys",
+    "vulnerability management",
+    "vulnerability assessment",
+    "vulnerability remediation",
+    "cmdb",
+    "okta",
+    "iam",
+    "identity",
+    "sso",
+    "mfa",
+    "jml",
+    "access management",
+    "netskope",
+    "cloudflare",
+    "mimecast",
+    "phishing",
+    "email security",
+    "incident response",
+    "incident investigation",
+    "security operations",
+    "servicenow",
+]
+
+STRONG_TITLE_PATTERNS = [
+    "cybersecurity engineer",
+    "security engineer",
+    "security operations engineer",
+    "endpoint security engineer",
+    "vulnerability engineer",
+    "vulnerability management engineer",
+    "iam engineer",
+    "identity engineer",
+]
+
+NEGATIVE_PATTERNS = {
+    "grc": 25,
+    "governance risk compliance": 25,
+    "it auditor": 25,
+    "audit": 18,
+    "risk & compliance": 25,
+    "risk and compliance": 25,
+    "technical support": 20,
+    "iam support": 20,
+    "soc l1": 25,
+    "soc level 1": 25,
+    "manual tester": 12,
 }
 
-NEGATIVE_TERMS = {
-    "okta-only": 35,
-    "okta only": 35,
-    "iam-only": 30,
-    "iam only": 30,
-    "identity and access management only": 30,
-    "vulnerability management only": 28,
-    "qualys-only": 25,
-    "qualys only": 25,
-    "it auditor": 22,
-    "grc analyst": 22,
-    "risk & compliance analyst": 22,
-    "risk and compliance analyst": 22,
-    "technology risk analyst": 20,
-    "generic it support": 25,
-    "technical support": 18,
-    "soc l1": 20,
-    "soc level 1": 20,
-    "iam support engineer": 22,
-    "manual tester": 15,
-}
+OFFENSIVE_SECURITY_TERMS = [
+    "penetration testing",
+    "penetration test",
+    "web application penetration",
+    "network vapt",
+    "mobile application penetration",
+    "red teaming",
+    "red team",
+    "burp suite",
+    "oscp",
+    "crtp",
+    "crte",
+    "crto",
+    "offensive security",
+]
+
+AUTOMOTIVE_EMBEDDED_TERMS = [
+    "automotive",
+    "autosar",
+    "embedded c",
+    "embedded systems",
+    "ecu",
+    "hsm/she",
+    "secure jtag",
+    "can protocol",
+    "iso/sae 21434",
+    "un r155",
+    "un r156",
+    "functional safety",
+]
 
 @dataclass
 class ScoreResult:
@@ -77,40 +104,79 @@ def normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text.lower()).strip()
 
 
+def _has_any(blob: str, terms: list[str]) -> bool:
+    return any(term in blob for term in terms)
+
+
+def _experience_minimum(blob: str) -> float | None:
+    matches = re.findall(
+        r"(\d+(?:\.\d+)?)\s*(?:-|–|to)\s*(\d+(?:\.\d+)?)\s*(?:yrs?|years?)",
+        blob,
+    )
+    if matches:
+        return min(float(a) for a, _ in matches)
+
+    plus = re.search(r"(\d+(?:\.\d+)?)\s*\+\s*(?:yrs?|years?)", blob)
+    if plus:
+        return float(plus.group(1))
+
+    return None
+
+
 def score_job(title: str, description: str, company: str = "") -> ScoreResult:
     title_n = normalize(title)
     blob = normalize(f"{title} {company} {description}")
-    score = 50
+
+    # Start conservatively. A title match alone must not produce a high score.
+    score = 35
     matched: List[str] = []
     penalties: List[str] = []
     reasons: List[str] = []
 
-    # Title gets extra weight because it is the strongest signal for role family.
-    for term, weight in POSITIVE_TERMS.items():
-        if term in blob:
-            bonus = weight + (5 if term in title_n else 0)
-            score += bonus
-            matched.append(term)
+    title_hits = [term for term in STRONG_TITLE_PATTERNS if term in title_n]
+    if title_hits:
+        score += 22
+        matched.extend(title_hits)
+        reasons.append("Role title aligns with the candidate's technical security target.")
 
-    for term, penalty in NEGATIVE_TERMS.items():
+    # Distinct, verified profile-skill overlaps are the main evidence of fit.
+    skill_hits = []
+    for term in PROFILE_SKILL_TERMS:
+        if term in blob and term not in skill_hits:
+            skill_hits.append(term)
+    if skill_hits:
+        score += min(30, 5 * len(skill_hits))
+        matched.extend(skill_hits[:12])
+        reasons.append(f"Job overlaps with {min(len(skill_hits), 6)} verified profile skill areas.")
+
+    # Penalize strongly specialized domains where the stored profile does not
+    # provide evidence of the required background.
+    if _has_any(blob, OFFENSIVE_SECURITY_TERMS):
+        score -= 28
+        penalties.append("offensive_security")
+        reasons.append("Role is strongly penetration-testing/red-team oriented rather than the candidate's primary security-operations profile.")
+
+    if _has_any(blob, AUTOMOTIVE_EMBEDDED_TERMS):
+        score -= 28
+        penalties.append("automotive_embedded")
+        reasons.append("Role is strongly automotive/embedded-security specialized and the profile does not verify that background.")
+
+    for term, penalty in NEGATIVE_PATTERNS.items():
         if term in blob:
             score -= penalty
             penalties.append(term)
 
-    if any(x in title_n for x in ["security engineer", "cybersecurity engineer", "security operations engineer"]):
-        score += 5
-        reasons.append("Role title aligns with a broader security-engineering direction.")
+    min_exp = _experience_minimum(blob)
+    if min_exp is not None and min_exp > 2.5:
+        score -= 30
+        penalties.append("experience_above_profile")
+        reasons.append(f"Job's stated minimum experience is about {min_exp:g} years, above the verified 2+ year profile.")
 
-    if any(x in blob for x in ["endpoint", "edr", "email security", "phishing", "cloud security", "incident response"]):
-        score += 5
-        reasons.append("Job contains security domains already represented in the candidate profile.")
-
-    if any(x in title_n for x in ["vulnerability", "iam", "identity", "okta"]):
-        reasons.append("Role title directly matches one of the current Tier 1 job families.")
-
-    if any(x in title_n for x in ["grc", "auditor", "risk", "compliance"]):
-        score -= 8
-        reasons.append("Role appears more governance/risk/audit oriented than the current technical target.")
+    # General security wording without concrete profile-skill overlap should not
+    # by itself qualify as a high-priority job.
+    if title_hits and not skill_hits:
+        score = min(score, 64)
+        reasons.append("Title is relevant, but the JD does not show enough overlap with verified tools/domains.")
 
     score = max(0, min(100, score))
     if score >= 85:
@@ -120,9 +186,7 @@ def score_job(title: str, description: str, company: str = "") -> ScoreResult:
     else:
         recommendation = "SKIP"
 
-    if penalties:
-        reasons.append("Contains one or more excluded or overly specialized role patterns.")
     if not matched:
-        reasons.append("Few direct role or skill matches found; manual review recommended before applying.")
+        reasons.append("Few verified profile matches were found in the title/JD.")
 
     return ScoreResult(score, recommendation, matched, penalties, reasons)
