@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import subprocess
+import re
 from pathlib import Path
 
 
@@ -61,11 +62,18 @@ class AttachedChrome:
         return proc.stdout.strip()
 
     def attach(self) -> str:
-        return self.run(
-            "attach",
-            "--extension=chrome",
-            f"--profile-dir-name={self.profile_dir_name}",
-        )
+        # Extension mode attaches to the currently running Chrome instance and
+        # its existing tabs/profile. There is no separate Playwright profile.
+        return self.run("attach", "--extension=chrome")
+
+    def select_naukri_tab(self) -> str:
+        tabs = self.run("tab-list")
+        # Example output contains: "- 2: [Naukri](https://www.naukri.com/...)"
+        matches = re.findall(r"(?m)^\s*-\s*(\d+):.*?https?://(?:www\.)?naukri\.com", tabs, re.I)
+        if matches:
+            return self.run("tab-select", matches[0])
+        # No Naukri tab: create one in the same authenticated browser.
+        return self.run("tab-new", "https://www.naukri.com/")
 
     def detach(self) -> str:
         return self.run("detach", check=False)
