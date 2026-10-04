@@ -7,3 +7,5 @@ __pycache__/
 browser_profile/
 data/*.db
 data/*.sqlite
+.browser/
+outbox/browser_artifacts/
