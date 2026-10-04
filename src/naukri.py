@@ -45,15 +45,30 @@ AGENT_CDP_HOST = "127.0.0.1"
 AGENT_CDP_PORT = int(os.getenv("NAUKRI_CDP_PORT", "9229"))
 AGENT_CDP_ENDPOINT = f"http://{AGENT_CDP_HOST}:{AGENT_CDP_PORT}"
 
+# Search families are deliberately role-led, with tool-specific variants derived
+# from the verified resume. Tool searches improve recall for jobs whose titles are
+# generic but whose JDs mention the candidate's actual platforms.
 DEFAULT_QUERIES = [
     "Cybersecurity Engineer",
     "Security Engineer",
     "Security Operations Engineer",
     "Endpoint Security Engineer",
     "Vulnerability Management Engineer",
-    "IAM Engineer",
-    "Identity Engineer",
+    "Cloud Security Engineer",
+    "Identity Security Engineer",
     "Security Analyst",
+    "Endpoint Security Microsoft Defender",
+    "Security Operations Microsoft Defender",
+    "Security Operations Carbon Black",
+    "Endpoint Security ThreatLocker",
+    "Vulnerability Management Qualys",
+    "IAM Security Okta",
+    "Identity Security Okta",
+    "Cloud Security Netskope",
+    "Cloud Security Cloudflare",
+    "Email Security Mimecast",
+    "Security Engineer EDR",
+    "Incident Response Security Analyst",
 ]
 
 PREFERRED_LOCATIONS = [
