@@ -103,22 +103,30 @@ def test_authenticated_naukri_browser_surface():
         )
         _safe_screenshot(agent.page, artifact_dir / "search_surface.png")
 
-        placeholders = {
-            (item.get("placeholder") or "").strip().lower()
-            for item in report.get("inputs", [])
+        # The inspector's generic input enumeration is intentionally lossy.
+        # Validate the exact controls the automation itself uses instead.
+        expected_selectors = {
+            "keyword": 'input[placeholder="Enter keyword / designation / companies"]',
+            "experience": 'input[placeholder="Select experience"]',
+            "location": 'input[placeholder="Enter location"]',
         }
-        expected = {
-            "enter keyword / designation / companies",
-            "select experience",
-            "enter location",
-        }
-        missing = expected - placeholders
+        missing = []
+        for name, selector in expected_selectors.items():
+            try:
+                loc = agent.page.locator(selector)
+                if not any(
+                    loc.nth(i).is_visible() and loc.nth(i).is_enabled()
+                    for i in range(loc.count())
+                ):
+                    missing.append(name)
+            except Exception:
+                missing.append(name)
+
         if missing:
             (artifact_dir / "search_surface_failure.json").write_text(
                 json.dumps(
                     {
-                        "missing": sorted(missing),
-                        "observed_inputs": sorted(placeholders),
+                        "missing_controls": missing,
                         "report": report,
                     },
                     indent=2,
@@ -128,8 +136,8 @@ def test_authenticated_naukri_browser_surface():
                 encoding="utf-8",
             )
         assert not missing, (
-            f"Naukri search surface changed. Missing placeholders: {sorted(missing)}; "
-            f"observed inputs: {sorted(placeholders)}"
+            f"Naukri search controls unavailable: {missing}; "
+            f"activated={report.get('activated')}"
         )
 
         (artifact_dir / "page.json").write_text(
