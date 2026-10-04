@@ -668,14 +668,15 @@ class NaukriAgent:
 
 
     def _extract_jobs(self) -> list[FoundJob]:
-        """Extract current Naukri result cards using multiple DOM strategies."""
+        """Extract only real Naukri job-listing URLs from the result page."""
         results: list[FoundJob] = []
         seen = set()
 
-        # Strategy 1: visible anchors with a job-like href.
-        anchors = self.page.locator('a[href*="job-listings"], a[href*="/job/"], a[href*="jobs"]')
+        anchors = self.page.locator(
+            'a[href*="/job-listings-"], a[href*="/job-listings/"]'
+        )
         try:
-            count = min(anchors.count(), 150)
+            count = min(anchors.count(), 120)
         except Exception:
             count = 0
 
@@ -693,103 +694,43 @@ class NaukriAgent:
                 continue
             if href.startswith("/"):
                 href = "https://www.naukri.com" + href
+
             host = urlparse(href).netloc.lower()
             if host and not self._host_is_naukri(host):
+                continue
+            if "/job-listings-" not in href.lower() and "/job-listings/" not in href.lower():
+                continue
+
+            key = href.split("?")[0]
+            if key in seen:
                 continue
 
             blob = self._nearby_card_text(a)
             if not title or len(title) < 3:
-                for line in [x.strip() for x in blob.splitlines() if x.strip()][:10]:
+                lines = [x.strip() for x in blob.splitlines() if x.strip()]
+                for line in lines[:10]:
                     if 4 <= len(line) <= 140:
                         title = re.sub(r"\s+", " ", line)
                         break
+
             if not title:
                 continue
 
-            fingerprint_url = href.split("?")[0]
-            if fingerprint_url in seen:
-                continue
-            seen.add(fingerprint_url)
-
-            company, location, salary, experience, description = self._parse_card_blob(blob, title)
-            results.append(
-                FoundJob(title, company, location, salary, experience, href, description)
+            seen.add(key)
+            company, location, salary, experience, description = self._parse_card_blob(
+                blob, title
             )
-
-        if results:
-            return results
-
-        # Strategy 2: known/current result-card containers. Naukri has changed
-        # class names over time, so inspect several likely card selectors.
-        card_selectors = [
-            "article",
-            '[class*="jobTuple"]',
-            '[class*="jobtuple"]',
-            '[class*="job-tuple"]',
-            '[class*="srp-jobtuple"]',
-            '[class*="cust-job-tuple"]',
-        ]
-
-        cards = None
-        for selector in card_selectors:
-            try:
-                loc = self.page.locator(selector)
-                if loc.count():
-                    cards = loc
-                    break
-            except Exception:
-                continue
-
-        if cards:
-            try:
-                count = min(cards.count(), 100)
-            except Exception:
-                count = 0
-
-            for i in range(count):
-                card = cards.nth(i)
-                try:
-                    if not card.is_visible():
-                        continue
-                    blob = card.inner_text(timeout=1500)
-                    links = card.locator("a[href]")
-                    href = ""
-                    for j in range(min(links.count(), 20)):
-                        candidate = links.nth(j).get_attribute("href") or ""
-                        if "job" in candidate.lower():
-                            href = candidate
-                            break
-                    if href.startswith("/"):
-                        href = "https://www.naukri.com" + href
-                except Exception:
-                    continue
-
-                if not href:
-                    continue
-                lines = [re.sub(r"\s+", " ", x).strip() for x in blob.splitlines() if x.strip()]
-                title = ""
-                for line in lines[:12]:
-                    low = line.lower()
-                    if (
-                        len(line) >= 4
-                        and len(line) <= 140
-                        and not any(x in low for x in ("jobs found", "posted", "apply", "not disclosed"))
-                    ):
-                        title = line
-                        break
-                if not title:
-                    continue
-
-                key = href.split("?")[0]
-                if key in seen:
-                    continue
-                seen.add(key)
-                company, location, salary, experience, description = self._parse_card_blob(
-                    blob, title
+            results.append(
+                FoundJob(
+                    title,
+                    company,
+                    location,
+                    salary,
+                    experience,
+                    href,
+                    description,
                 )
-                results.append(
-                    FoundJob(title, company, location, salary, experience, href, description)
-                )
+            )
 
         return results
 
@@ -842,18 +783,38 @@ class NaukriAgent:
     def _target_preference_ok(self, job: FoundJob, profile: dict) -> bool:
         targeting = profile.get("targeting", {})
         preferred = [str(x).lower() for x in targeting.get("preferred_locations", [])]
+
         loc_blob = (job.location or "").lower()
         if loc_blob and preferred and not any(p in loc_blob for p in preferred):
             return False
+
+        # Candidate has 2+ years. Do not queue jobs whose stated minimum is
+        # materially above that level.
+        exp_blob = (job.experience or "").lower()
+        exp_range = re.search(
+            r"(\d+(?:\.\d+)?)\s*(?:-|–|to)\s*(\d+(?:\.\d+)?)\s*(?:yrs?|years?)",
+            exp_blob,
+        )
+        if exp_range and float(exp_range.group(1)) > 2.5:
+            return False
+
+        if not exp_range:
+            exp_single = re.search(r"(\d+(?:\.\d+)?)\s*\+?\s*(?:yrs?|years?)", exp_blob)
+            if exp_single and float(exp_single.group(1)) > 2.5:
+                return False
+
         salary_blob = (job.salary or "").lower()
         if salary_blob and "not disclosed" not in salary_blob and "confidential" not in salary_blob:
-            nums = [float(x.replace(',', '')) for x in re.findall(r"(?:₹\s*)?(\d+(?:\.\d+)?)", salary_blob)]
-            if nums:
-                max_salary = max(nums)
-                # Interpret small figures as LPA when the listing mentions LPA/Lacs/Lakh.
-                if any(t in salary_blob for t in ("lpa", "lac", "lakh")) and max_salary < float(targeting.get("minimum_ctc_lpa", 8)):
+            nums = [
+                float(x.replace(",", ""))
+                for x in re.findall(r"(?:₹\s*)?(\d+(?:\.\d+)?)", salary_blob)
+            ]
+            if nums and any(t in salary_blob for t in ("lpa", "lac", "lakh")):
+                if max(nums) < float(targeting.get("minimum_ctc_lpa", 8)):
                     return False
+
         return True
+
 
     def ingest(self, jobs: list[FoundJob]) -> list[FoundJob]:
         added: list[FoundJob] = []
@@ -866,6 +827,16 @@ class NaukriAgent:
             if find_duplicate(job.company, job.title, job.url, fp):
                 continue
             result = score_job(job.title, job.description, job.company)
+
+            exp_blob = (job.experience or "").lower()
+            exp_range = re.search(
+                r"(\d+(?:\.\d+)?)\s*(?:-|–|to)\s*(\d+(?:\.\d+)?)\s*(?:yrs?|years?)",
+                exp_blob,
+            )
+            if exp_range and float(exp_range.group(1)) > 2.5:
+                result.score = max(0, result.score - 25)
+                result.recommendation = "SKIP" if result.score < 70 else "REVIEW"
+
             # Lightweight location guard: don't lower the score if salary is unknown;
             # just let preference filtering happen before application.
             job.score = result.score
