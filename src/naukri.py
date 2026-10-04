@@ -195,6 +195,27 @@ class NaukriAgent:
                 continue
         return False
 
+    def _click_google_login(self) -> bool:
+        """Click Naukri's Google sign-in control without handling Google credentials."""
+        candidates = [
+            self.page.get_by_role("button", name=re.compile(r"(continue|sign).*google|google", re.I)),
+            self.page.get_by_role("link", name=re.compile(r"(continue|sign).*google|google", re.I)),
+            self.page.get_by_text(re.compile(r"(continue|sign).*google|google", re.I)),
+            self.page.locator('[aria-label*="google" i]'),
+            self.page.locator('button:has-text("Google")'),
+            self.page.locator('a:has-text("Google")'),
+        ]
+        for locator in candidates:
+            try:
+                if locator.count():
+                    locator.first.scroll_into_view_if_needed()
+                    locator.first.click()
+                    self.page.wait_for_timeout(1200)
+                    return True
+            except Exception:
+                continue
+        return False
+
     def ensure_logged_in(self):
         self.open_home()
         if self.is_logged_in():
@@ -203,12 +224,28 @@ class NaukriAgent:
         self.page.wait_for_timeout(800)
         username, password = get_naukri_credentials()
         if not username or not password:
-            print("\nNaukri credentials are not configured yet.")
-            print("I will save them in your macOS credential store; the password will not be printed or written to project files.")
-            interactive_setup()
-            username, password = get_naukri_credentials()
-            if not username or not password:
-                raise RuntimeError("Naukri credentials could not be loaded after setup.")
+            # This account may use Google Sign-In rather than a Naukri password.
+            # We never collect or automate Google credentials; the user completes
+            # account selection/2FA in the browser when Google asks for it.
+            if self._click_google_login():
+                self.page.wait_for_timeout(1200)
+                if "accounts.google.com" in self.page.url.lower():
+                    self.wait_for_human("Complete Google account selection or Google 2-step verification in the browser")
+                    if not self.is_logged_in():
+                        # Returning to Naukri can take a moment after OAuth.
+                        self.page.wait_for_timeout(1500)
+            else:
+                raise RuntimeError(
+                    "No Naukri password is configured and the Google sign-in control could not be found."
+                )
+            if self.is_logged_in():
+                return
+            # If Google flow returned to Naukri but the session is still not clear,
+            # give the user a final in-browser takeover rather than requesting a password.
+            self.wait_for_human("Complete Naukri's Google sign-in flow in the browser")
+            if not self.is_logged_in():
+                raise RuntimeError("Naukri Google sign-in was not completed")
+            return
 
         email_locators = [
             self.page.locator('input[type="email"]'),
