@@ -1040,6 +1040,42 @@ class NaukriAgent:
 
         return refreshed
 
+    @staticmethod
+    def _minimum_required_experience(job: FoundJob):
+        """Extract the clearest minimum experience signal from the listing."""
+        # Prefer Naukri's structured experience field.
+        candidates = [
+            job.experience or "",
+            # Naukri URLs commonly contain e.g. "8-to-13-years".
+            job.url or "",
+        ]
+        for text in candidates:
+            blob = (text or "").lower()
+            m = re.search(
+                r"(\d+(?:\.\d+)?)\s*(?:-|–|to)\s*(\d+(?:\.\d+)?)\s*(?:yrs?|years?)",
+                blob,
+            )
+            if m:
+                return float(m.group(1))
+
+            m = re.search(
+                r"(\d+(?:\.\d+)?)\s*\+\s*(?:yrs?|years?)",
+                blob,
+            )
+            if m:
+                return float(m.group(1))
+
+        # Finally check explicit minimum/at-least wording in the JD.
+        blob = (job.description or "").lower()
+        m = re.search(
+            r"(?:minimum\s+of|at\s+least|minimum)\s+(\d+(?:\.\d+)?)\s*\+?\s*(?:yrs?|years?)",
+            blob,
+        )
+        if m:
+            return float(m.group(1))
+
+        return None
+
     def _target_preference_ok(self, job: FoundJob, profile: dict) -> bool:
         targeting = profile.get("targeting", {})
         preferred = [str(x).lower() for x in targeting.get("preferred_locations", [])]
@@ -1048,20 +1084,11 @@ class NaukriAgent:
         if loc_blob and preferred and not any(p in loc_blob for p in preferred):
             return False
 
-        # Candidate has 2+ years. Do not queue jobs whose stated minimum is
-        # materially above that level.
-        exp_blob = (job.experience or "").lower()
-        exp_range = re.search(
-            r"(\d+(?:\.\d+)?)\s*(?:-|–|to)\s*(\d+(?:\.\d+)?)\s*(?:yrs?|years?)",
-            exp_blob,
-        )
-        if exp_range and float(exp_range.group(1)) > 2.5:
+        # Candidate has 2+ years. Use the structured field/URL first and only
+        # fall back to explicit "minimum/at least" wording in the JD.
+        min_exp = self._minimum_required_experience(job)
+        if min_exp is not None and min_exp > 2.5:
             return False
-
-        if not exp_range:
-            exp_single = re.search(r"(\d+(?:\.\d+)?)\s*\+?\s*(?:yrs?|years?)", exp_blob)
-            if exp_single and float(exp_single.group(1)) > 2.5:
-                return False
 
         salary_blob = (job.salary or "").lower()
         if salary_blob and "not disclosed" not in salary_blob and "confidential" not in salary_blob:
@@ -1098,6 +1125,23 @@ class NaukriAgent:
                 continue
 
             if not self._target_preference_ok(detail, profile):
+                result = score_job(detail.title, detail.description, detail.company)
+                detail.score = min(result.score, 69)
+                detail.recommendation = "SKIP"
+                # Keep the record for auditability, but never create application prep.
+                fp = fingerprint_job(detail.company, detail.title, detail.url)
+                duplicate = find_duplicate(detail.company, detail.title, detail.url, fp)
+                if not duplicate:
+                    detail.job_id = add_job(
+                        detail.company,
+                        detail.title,
+                        detail.url,
+                        detail.description,
+                        detail.score,
+                        "SKIP",
+                        fp,
+                    )
+                    added.append(detail)
                 continue
 
             fp = fingerprint_job(detail.company, detail.title, detail.url)
