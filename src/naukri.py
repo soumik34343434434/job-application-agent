@@ -188,7 +188,30 @@ class NaukriAgent:
             raise RuntimeError("Connected to dedicated Chrome, but no browser context is available.")
 
         self.context = self.browser.contexts[0]
-        self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
+
+        # CDP often exposes an initial about:blank tab before the actual Naukri
+        # tab. Never assume pages[0] is the page the user is looking at.
+        pages = list(self.context.pages)
+        naukri_pages = []
+        for page in pages:
+            try:
+                if "naukri.com" in (page.url or "").lower():
+                    naukri_pages.append(page)
+            except Exception:
+                continue
+
+        if naukri_pages:
+            self.page = naukri_pages[-1]
+        else:
+            usable_pages = []
+            for page in pages:
+                try:
+                    if (page.url or "").lower() not in ("about:blank", ""):
+                        usable_pages.append(page)
+                except Exception:
+                    continue
+            self.page = usable_pages[-1] if usable_pages else self.context.new_page()
+
         self.page.set_default_timeout(12000)
         return self
 
