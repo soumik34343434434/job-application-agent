@@ -1003,15 +1003,18 @@ class NaukriAgent:
             if not detail:
                 continue
 
-            if not self._target_preference_ok(detail, profile):
-                set_status(row["id"], "SKIP", "Live job details fail targeting preferences.")
-                refreshed.append(detail)
-                continue
-
+            # Always calculate a live-JD score first, even when a hard targeting
+            # rule later rejects the job. This keeps the database informative
+            # instead of leaving rejected rows at the old score or at 0/NEW.
             result = score_job(detail.title, detail.description, detail.company)
             detail.score = result.score
             detail.recommendation = result.recommendation
             detail.job_id = row["id"]
+
+            target_ok = self._target_preference_ok(detail, profile)
+            if not target_ok:
+                detail.score = min(detail.score, 69)
+                detail.recommendation = "SKIP"
 
             update_job_details(
                 row["id"],
@@ -1019,15 +1022,20 @@ class NaukriAgent:
                 detail.title,
                 detail.url,
                 detail.description,
-                result.score,
-                result.recommendation,
+                detail.score,
+                detail.recommendation,
             )
 
-            if result.score >= profile["targeting"]["minimum_match_score_for_review"]:
+            if target_ok and detail.score >= profile["targeting"]["minimum_match_score_for_review"]:
                 prep = prepare_application(detail.title, detail.description, profile, detail.company)
                 save_prep(row["id"], json.dumps(prep_to_dict(prep), ensure_ascii=False))
             else:
-                set_status(row["id"], result.recommendation or "SKIP", "Re-scored from full live job description.")
+                reason = (
+                    "Re-scored from full live job description but failed hard targeting filters."
+                    if not target_ok
+                    else "Re-scored from full live job description."
+                )
+                set_status(row["id"], detail.recommendation or "SKIP", reason)
             refreshed.append(detail)
 
         return refreshed
