@@ -94,49 +94,59 @@ def cmd_naukri_setup_browser(args):
     print("2. Click Login -> Sign in with Google.")
     print("3. Complete Google verification normally.")
     print("4. Confirm you are logged into Naukri.")
-    print("5. CLOSE that dedicated Chrome window.")
+    print("5. Quit that dedicated Chrome window normally (Chrome -> Quit Google Chrome).")
+    print("6. Only after it is fully closed, run 'python3 -m src.cli naukri login' or 'scan'.")
     print()
-    setup_agent_browser()
+    try:
+        setup_agent_browser()
+    except RuntimeError as exc:
+        raise SystemExit(str(exc))
     print("Dedicated Naukri Chrome opened.")
 
 def cmd_naukri_login(args):
-    from .naukri import (
-        NaukriAgent,
-        AGENT_BROWSER_DIR,
-        setup_agent_browser,
-    )
+    from .naukri import NaukriAgent, AGENT_BROWSER_DIR, setup_agent_browser
 
     print("Checking the dedicated Naukri browser profile.")
     print(f"Persistent profile: {AGENT_BROWSER_DIR}")
     print("Your normal Chrome profile remains untouched.")
 
-    # First verify the saved session without attempting Google authentication.
     agent = NaukriAgent(headless=False, slow_mo=args.slow_mo)
     try:
         agent.__enter__()
-        try:
-            agent.page.goto("https://www.naukri.com/", wait_until="domcontentloaded")
-            agent.page.wait_for_timeout(1200)
-            if agent.is_logged_in():
-                print("Naukri session is already authenticated.")
-                print("The dedicated automation browser is ready.")
-                print("Press Enter here when you want to close it.")
-                input()
-                return
-        finally:
-            agent.__exit__(None, None, None)
-    except Exception as exc:
-        print(f"Session check could not use the dedicated profile: {exc}")
+    except RuntimeError as exc:
+        msg = str(exc)
+        if "profile is still in use" in msg.lower() or "opening in existing browser session" in msg.lower():
+            raise SystemExit(
+                msg
+                + "\n\nIMPORTANT: The dedicated Naukri Chrome is currently open. "
+                "Do not run login/scan while it is open. Finish the manual Google/Naukri "
+                "login there, quit that dedicated Chrome normally, then rerun this command."
+            )
+        raise
 
-    print()
-    print("Naukri is not logged in in the dedicated profile.")
-    print("Opening a NORMAL Chrome window for the one-time Google login.")
-    print("Complete Naukri -> Login -> Sign in with Google there.")
-    print("After you are fully logged in, close that dedicated Chrome window.")
-    print()
-    setup_agent_browser()
+    try:
+        agent.open_home()
+        if agent.is_logged_in():
+            print("Naukri session is authenticated.")
+            print("The dedicated automation browser is ready.")
+            print("Press Enter here when you want to close it.")
+            input()
+            return
+
+        print()
+        print("Naukri is not logged in in the dedicated profile.")
+        print("Opening a NORMAL Chrome window for the one-time Google login.")
+        print("Complete Naukri -> Login -> Sign in with Google there.")
+        print("After you are fully logged in, quit that dedicated Chrome normally.")
+        print()
+    finally:
+        agent.__exit__(None, None, None)
+
+    try:
+        setup_agent_browser()
+    except RuntimeError as exc:
+        raise SystemExit(str(exc))
     print("Setup window opened. After closing it, run this same command again.")
-
 
 def cmd_naukri_scan(args):
     from .naukri import NaukriAgent, print_jobs
