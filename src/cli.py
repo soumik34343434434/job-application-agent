@@ -84,6 +84,21 @@ def cmd_naukri_create_account(args):
         print(agent.create_account())
 
 
+def cmd_naukri_setup_browser(args):
+    from .naukri import setup_agent_browser, AGENT_BROWSER_DIR
+
+    print("Opening a normal Chrome window for the dedicated Naukri profile.")
+    print(f"Profile data: {AGENT_BROWSER_DIR}")
+    print()
+    print("1. In the opened Chrome window, open Naukri.")
+    print("2. Click Login -> Sign in with Google.")
+    print("3. Complete Google verification normally.")
+    print("4. Confirm you are logged into Naukri.")
+    print("5. CLOSE that dedicated Chrome window.")
+    print()
+    setup_agent_browser()
+    print("Dedicated Naukri Chrome opened.")
+
 def cmd_naukri_login(args):
     from .naukri import NaukriAgent, AGENT_BROWSER_DIR
 
@@ -153,6 +168,7 @@ def main():
     ns = naukri.add_subparsers(required=True)
     x = ns.add_parser("setup-credentials"); x.set_defaults(func=cmd_naukri_setup)
     x = ns.add_parser("create-account"); x.add_argument("--slow-mo", type=int, default=150); x.set_defaults(func=cmd_naukri_create_account)
+    x = ns.add_parser("setup-browser"); x.set_defaults(func=cmd_naukri_setup_browser)
     x = ns.add_parser("login"); x.add_argument("--slow-mo", type=int, default=150); x.set_defaults(func=cmd_naukri_login)
     x = ns.add_parser("search"); x.add_argument("--query", required=True); x.add_argument("--location", default=""); x.add_argument("--slow-mo", type=int, default=150); x.set_defaults(func=cmd_naukri_search)
     x = ns.add_parser("scan"); x.add_argument("--max-queries", type=int, default=6); x.add_argument("--per-query", type=int, default=12); x.add_argument("--slow-mo", type=int, default=150); x.set_defaults(func=cmd_naukri_scan)
