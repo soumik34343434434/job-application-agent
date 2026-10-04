@@ -1,10 +1,11 @@
 import json
 from pathlib import Path
+from urllib.request import urlopen
 
 import pytest
 
 from src.naukri import NaukriAgent
-from src.naukri_inspector import NaukriInspector
+from src.naukri_inspector import AGENT_CDP_ENDPOINT, NaukriInspector
 
 
 @pytest.mark.naukri_live
@@ -18,22 +19,88 @@ def test_authenticated_naukri_browser_surface():
     artifact_dir = Path("outbox/live_runner")
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
+    def write_json(name, data):
+        (artifact_dir / name).write_text(
+            json.dumps(data, indent=2, ensure_ascii=False, default=str),
+            encoding="utf-8",
+        )
+
+    def diagnostics(stage, error=None):
+        payload = {"stage": stage, "error": str(error) if error else None}
+        try:
+            with urlopen(f"{AGENT_CDP_ENDPOINT}/json/version", timeout=3) as response:
+                payload["cdp_version"] = json.load(response)
+        except Exception as exc:
+            payload["cdp_version_error"] = str(exc)
+        try:
+            with urlopen(f"{AGENT_CDP_ENDPOINT}/json/list", timeout=3) as response:
+                pages = json.load(response)
+                payload["cdp_pages"] = [
+                    {
+                        "id": item.get("id"),
+                        "type": item.get("type"),
+                        "title": item.get("title"),
+                        "url": item.get("url"),
+                    }
+                    for item in pages
+                ]
+        except Exception as exc:
+            payload["cdp_pages_error"] = str(exc)
+
+        try:
+            if inspector.page is not None:
+                payload["page_info"] = inspector.page_info()
+                payload["visible_text"] = inspector.visible_text().get("text", "")[:6000]
+                inspector.page.screenshot(
+                    path=str(artifact_dir / "failure_page.png"),
+                    full_page=True,
+                )
+        except Exception as exc:
+            payload["page_capture_error"] = str(exc)
+
+        write_json("failure.json", payload)
+
     inspector = NaukriInspector()
     try:
         try:
             inspector.connect()
-        except RuntimeError as exc:
-            pytest.fail(str(exc))
+        except Exception as exc:
+            diagnostics("connect", exc)
+            pytest.fail(f"Could not attach to dedicated Chrome: {exc}")
+
+        try:
+            write_json(
+                "pages.json",
+                [
+                    {"title": p.title(), "url": p.url}
+                    for p in inspector.context.pages
+                ],
+            )
+        except Exception:
+            pass
 
         info = inspector.page_info()
         if "naukri.com" not in (info.get("url") or "").lower():
-            pytest.fail(f"Dedicated browser is not currently on Naukri: {info}")
+            diagnostics("selected_page_not_naukri")
+            pytest.fail(
+                "Dedicated Chrome is reachable, but the selected tab is not Naukri: "
+                f"{info}"
+            )
 
         body = inspector.visible_text().get("text", "")
         lower = body.lower()
         if any(x in lower for x in ("captcha", "security verification", "access denied")):
-            inspector.screenshot_to_file = None
-            pytest.skip("Naukri is presenting a human/security gate; live runner captured the page state.")
+            inspector.page.screenshot(
+                path=str(artifact_dir / "security_gate.png"),
+                full_page=True,
+            )
+            write_json(
+                "security_gate.json",
+                {"page": info, "text": body[:6000]},
+            )
+            pytest.skip(
+                "Naukri is presenting a human/security gate; live runner captured the page state."
+            )
 
         agent = NaukriAgent(headless=False, slow_mo=0)
         agent._pw = inspector._pw
@@ -43,12 +110,17 @@ def test_authenticated_naukri_browser_surface():
         agent.page.set_default_timeout(12000)
 
         if not agent.is_logged_in():
+            diagnostics("not_authenticated")
             pytest.fail("Dedicated Naukri Chrome is not authenticated.")
 
         agent.page.goto("https://www.naukri.com/", wait_until="domcontentloaded", timeout=20000)
         agent.page.wait_for_timeout(1200)
 
         if agent.needs_human_verification():
+            agent.page.screenshot(
+                path=str(artifact_dir / "security_gate_after_navigation.png"),
+                full_page=True,
+            )
             pytest.skip("Naukri presented a CAPTCHA/security gate during the live probe.")
 
         report = agent.inspect_search_control()
@@ -70,6 +142,15 @@ def test_authenticated_naukri_browser_surface():
             "enter location",
         }
         missing = expected - placeholders
+        if missing:
+            write_json(
+                "search_surface_failure.json",
+                {
+                    "missing": sorted(missing),
+                    "observed_inputs": sorted(placeholders),
+                    "report": report,
+                },
+            )
         assert not missing, (
             f"Naukri search surface changed. Missing placeholders: {sorted(missing)}; "
             f"observed inputs: {sorted(placeholders)}"
@@ -79,5 +160,10 @@ def test_authenticated_naukri_browser_surface():
             json.dumps(info, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+    except pytest.skip.Exception:
+        raise
+    except Exception as exc:
+        diagnostics("unexpected_exception", exc)
+        raise
     finally:
         inspector.close()
