@@ -496,22 +496,64 @@ class NaukriAgent:
             return False
 
 
+    def _set_relevance_sort(self):
+        """Prefer Naukri relevance over personalized ranking when the control exists."""
+        for context in self._all_contexts():
+            try:
+                personalized = context.get_by_text(
+                    re.compile(r"^personalized$", re.I)
+                )
+                for i in range(personalized.count()):
+                    item = personalized.nth(i)
+                    if not item.is_visible():
+                        continue
+                    item.click()
+                    self.page.wait_for_timeout(300)
+                    relevance = context.get_by_text(
+                        re.compile(r"^relevance$", re.I)
+                    )
+                    for j in range(relevance.count()):
+                        option = relevance.nth(j)
+                        if option.is_visible():
+                            option.click()
+                            self.page.wait_for_timeout(900)
+                            return True
+            except Exception:
+                continue
+        return False
+
+    def _search_results_ready(self) -> bool:
+        text = self._body_text()
+        return (
+            ("jobs found" in text or "job found" in text)
+            and self.page.locator('a[href*="/job-listings/"]').count() > 0
+        )
+
     def search(self, query: str, location: str = "") -> list[FoundJob]:
         self.ensure_logged_in()
         self.page.goto(NAUKRI_HOME, wait_until="domcontentloaded")
-        self.page.wait_for_timeout(1000)
+        self.page.wait_for_timeout(1200)
+
         searched = self._fill_search_form(query, location)
-        if not searched:
-            # Current Naukri exposes a search page with these concepts; the form
-            # may change over time, so use the public search endpoint as fallback.
+        if searched:
+            self.page.wait_for_timeout(1800)
+            self._set_relevance_sort()
+
+        # Keep the URL fallback, but only as a recovery path. Naukri still exposes
+        # /search for job search, while the visible search UI is the canonical way
+        # to establish the query and location in the current page state.
+        if not searched or not self._search_results_ready():
             url = f"https://www.naukri.com/search?keyword={quote_plus(query)}"
             if location:
                 url += f"&location={quote_plus(location)}"
             self.page.goto(url, wait_until="domcontentloaded")
-            self.page.wait_for_timeout(1500)
+            self.page.wait_for_timeout(2200)
+            self._set_relevance_sort()
+
         if self.needs_human_verification():
             self.wait_for_human("Naukri presented CAPTCHA/security verification during search")
         return self._extract_jobs()
+
 
     def _extract_jobs(self) -> list[FoundJob]:
         links = self.page.locator('a[href*="/job-listings/"]')
