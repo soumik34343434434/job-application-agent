@@ -1,137 +1,86 @@
 import json
 from pathlib import Path
-from urllib.request import urlopen
-
 import pytest
 
-from src.naukri import NaukriAgent
-from src.naukri_inspector import AGENT_CDP_ENDPOINT, NaukriInspector
+from src.naukri import HumanActionRequired, NaukriAgent
 from src.scorer import score_job
-
 
 
 def _safe_screenshot(page, path):
     try:
-        page.screenshot(path=str(path), full_page=True, timeout=4000, animations="disabled")
+        page.screenshot(
+            path=str(path),
+            full_page=True,
+            timeout=4000,
+            animations="disabled",
+        )
     except Exception as exc:
-        (Path(path).with_suffix(".screenshot_error.txt")).write_text(
+        Path(path).with_suffix(".screenshot_error.txt").write_text(
             str(exc), encoding="utf-8"
         )
 
 
-@pytest.mark.naukri_live
-def test_authenticated_naukri_browser_surface():
-    """
-    Live regression against the user's own dedicated Chrome session.
-
-    This test is intentionally limited to login/session + search-surface checks.
-    It never submits a job application.
-    """
-    artifact_dir = Path("outbox/live_runner")
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-
+def _bind_diagnostics(agent, artifact_dir):
     def write_json(name, data):
         (artifact_dir / name).write_text(
             json.dumps(data, indent=2, ensure_ascii=False, default=str),
             encoding="utf-8",
         )
 
-    def diagnostics(stage, error=None):
-        payload = {"stage": stage, "error": str(error) if error else None}
+    def capture(stage, error=None):
+        payload = {
+            "stage": stage,
+            "error": str(error) if error else None,
+        }
         try:
-            with urlopen(f"{AGENT_CDP_ENDPOINT}/json/version", timeout=3) as response:
-                payload["cdp_version"] = json.load(response)
+            if agent.page is not None:
+                payload["page_url"] = agent.page.url
+                payload["page_title"] = agent.page.title()
+                payload["visible_text"] = agent.page.locator("body").inner_text(timeout=3000)[:6000]
+                _safe_screenshot(agent.page, artifact_dir / "failure_page.png")
         except Exception as exc:
-            payload["cdp_version_error"] = str(exc)
-        try:
-            with urlopen(f"{AGENT_CDP_ENDPOINT}/json/list", timeout=3) as response:
-                pages = json.load(response)
-                payload["cdp_pages"] = [
-                    {
-                        "id": item.get("id"),
-                        "type": item.get("type"),
-                        "title": item.get("title"),
-                        "url": item.get("url"),
-                    }
-                    for item in pages
-                ]
-        except Exception as exc:
-            payload["cdp_pages_error"] = str(exc)
-
-        try:
-            if inspector.page is not None:
-                payload["page_info"] = inspector.page_info()
-                payload["visible_text"] = inspector.visible_text().get("text", "")[:6000]
-                _safe_screenshot(inspector.page, artifact_dir / "failure_page.png")
-        except Exception as exc:
-            payload["page_capture_error"] = str(exc)
-
+            payload["capture_error"] = str(exc)
         write_json("failure.json", payload)
 
-    inspector = NaukriInspector()
+    return capture
+
+
+@pytest.mark.naukri_live
+def test_authenticated_naukri_browser_surface():
+    """Live Naukri surface check; never submits an application."""
+    artifact_dir = Path("outbox/live_runner")
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+
+    agent = NaukriAgent(headless=False, slow_mo=0)
+    diagnostics = _bind_diagnostics(agent, artifact_dir)
+
     try:
-        try:
-            inspector.connect()
-        except Exception as exc:
-            diagnostics("connect", exc)
-            pytest.fail(f"Could not attach to dedicated Chrome: {exc}")
-
-        try:
-            write_json(
-                "pages.json",
-                [
-                    {"title": p.title(), "url": p.url}
-                    for p in inspector.context.pages
-                ],
-            )
-        except Exception:
-            pass
-
-        info = inspector.page_info()
-        if "naukri.com" not in (info.get("url") or "").lower():
-            diagnostics("selected_page_not_naukri")
-            pytest.fail(
-                "Dedicated Chrome is reachable, but the selected tab is not Naukri: "
-                f"{info}"
-            )
-
-        body = inspector.visible_text().get("text", "")
-        lower = body.lower()
-        if any(x in lower for x in ("captcha", "security verification", "access denied")):
-            _safe_screenshot(inspector.page, artifact_dir / "security_gate.png")
-            write_json(
-                "security_gate.json",
-                {"page": info, "text": body[:6000]},
-            )
-            pytest.skip(
-                "Naukri is presenting a human/security gate; live runner captured the page state."
-            )
-
-        agent = NaukriAgent(headless=False, slow_mo=0)
-        agent._pw = inspector._pw
-        agent.browser = inspector.browser
-        agent.context = inspector.context
-        agent.page = inspector.page
-        agent.page.set_default_timeout(12000)
+        agent.__enter__()
 
         if not agent.is_logged_in():
             diagnostics("not_authenticated")
             pytest.fail("Dedicated Naukri Chrome is not authenticated.")
 
-        agent.page.goto("https://www.naukri.com/", wait_until="domcontentloaded", timeout=20000)
-        agent.page.wait_for_timeout(1200)
+        info = {
+            "url": agent.page.url,
+            "title": agent.page.title(),
+        }
 
         if agent.needs_human_verification():
-            _safe_screenshot(agent.page, artifact_dir / "security_gate_after_navigation.png")
-            pytest.skip("Naukri presented a CAPTCHA/security gate during the live probe.")
+            _safe_screenshot(agent.page, artifact_dir / "security_gate.png")
+            (artifact_dir / "security_gate.json").write_text(
+                json.dumps(info, indent=2),
+                encoding="utf-8",
+            )
+            pytest.skip("Naukri is presenting a CAPTCHA/security gate.")
 
         report = agent.inspect_search_control()
         (artifact_dir / "search_surface.json").write_text(
-            json.dumps(report, indent=2, ensure_ascii=False),
+            json.dumps(report, indent=2, ensure_ascii=False, default=str),
             encoding="utf-8",
         )
 
-        # Capture the exact DOM nodes containing the visible search launcher text.
+        # Capture the exact live nodes containing the search launcher text.
         search_dom = agent.page.evaluate(
             """
             () => Array.from(document.querySelectorAll('*'))
@@ -154,12 +103,10 @@ def test_authenticated_naukri_browser_surface():
         )
         _safe_screenshot(agent.page, artifact_dir / "search_surface.png")
 
-        inputs = report.get("inputs", [])
         placeholders = {
             (item.get("placeholder") or "").strip().lower()
-            for item in inputs
+            for item in report.get("inputs", [])
         }
-
         expected = {
             "enter keyword / designation / companies",
             "select experience",
@@ -167,13 +114,18 @@ def test_authenticated_naukri_browser_surface():
         }
         missing = expected - placeholders
         if missing:
-            write_json(
-                "search_surface_failure.json",
-                {
-                    "missing": sorted(missing),
-                    "observed_inputs": sorted(placeholders),
-                    "report": report,
-                },
+            (artifact_dir / "search_surface_failure.json").write_text(
+                json.dumps(
+                    {
+                        "missing": sorted(missing),
+                        "observed_inputs": sorted(placeholders),
+                        "report": report,
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                    default=str,
+                ),
+                encoding="utf-8",
             )
         assert not missing, (
             f"Naukri search surface changed. Missing placeholders: {sorted(missing)}; "
@@ -190,53 +142,31 @@ def test_authenticated_naukri_browser_surface():
         diagnostics("unexpected_exception", exc)
         raise
     finally:
-        inspector.close()
-
+        agent.__exit__(None, None, None)
 
 
 @pytest.mark.naukri_live
 def test_naukri_live_search_extract_and_score():
-    """
-    End-to-end dry run of the discovery pipeline against the user's own
-    authenticated Naukri browser.
-
-    It searches but never applies or submits. It validates:
-      search form -> 2 years -> location -> real job-listing extraction ->
-      authoritative detail extraction -> profile scoring.
-    """
+    """End-to-end dry run: search -> extract -> read full JD -> score."""
     artifact_dir = Path("outbox/live_runner")
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
-    inspector = NaukriInspector()
-    agent = None
+    agent = NaukriAgent(headless=False, slow_mo=0)
     try:
-        inspector.connect()
-
-        info = inspector.page_info()
-        if "naukri.com" not in (info.get("url") or "").lower():
-            pytest.fail(f"Dedicated Chrome is not currently on Naukri: {info}")
-
-        agent = NaukriAgent(headless=False, slow_mo=0)
-        agent._pw = inspector._pw
-        agent.browser = inspector.browser
-        agent.context = inspector.context
-        agent.page = inspector.page
-        agent.page.set_default_timeout(12000)
+        agent.__enter__()
 
         if not agent.is_logged_in():
             pytest.fail("Dedicated Naukri Chrome is not authenticated.")
 
-        agent.page.goto("https://www.naukri.com/", wait_until="domcontentloaded", timeout=20000)
-        agent.page.wait_for_timeout(1200)
-
         if agent.needs_human_verification():
             _safe_screenshot(agent.page, artifact_dir / "dry_run_security_gate.png")
-            pytest.skip("Naukri presented a security gate before the dry-run search.")
+            pytest.skip("Naukri is presenting a security gate before the dry-run search.")
 
         query = "Cybersecurity Engineer"
         location = "Kolkata"
 
         if not agent._fill_search_form(query, location):
+            _safe_screenshot(agent.page, artifact_dir / "dry_run_search_failure.png")
             pytest.fail("Could not fill/submit the live Naukri search form.")
 
         if agent.needs_human_verification():
@@ -255,9 +185,7 @@ def test_naukri_live_search_extract_and_score():
             _safe_screenshot(agent.page, artifact_dir / "dry_run_no_jobs.png")
             pytest.fail("Search returned no real Naukri job-listing URLs.")
 
-        # Prevent _extract_job_detail from waiting indefinitely for a human in CI.
         def no_human_takeover(reason):
-            from src.naukri import HumanActionRequired
             raise HumanActionRequired(reason)
 
         agent.wait_for_human = no_human_takeover
@@ -272,23 +200,25 @@ def test_naukri_live_search_extract_and_score():
                 continue
 
             scored = score_job(detail.title, detail.description, detail.company)
-            details.append({
-                "title": detail.title,
-                "company": detail.company,
-                "location": detail.location,
-                "salary": detail.salary,
-                "experience": detail.experience,
-                "url": detail.url,
-                "description_length": len(detail.description or ""),
-                "score": scored.score,
-                "recommendation": scored.recommendation,
-                "matched": scored.matched,
-                "penalties": scored.penalties,
-                "reasons": scored.reasons,
-            })
+            details.append(
+                {
+                    "title": detail.title,
+                    "company": detail.company,
+                    "location": detail.location,
+                    "salary": detail.salary,
+                    "experience": detail.experience,
+                    "url": detail.url,
+                    "description_length": len(detail.description or ""),
+                    "score": scored.score,
+                    "recommendation": scored.recommendation,
+                    "matched": scored.matched,
+                    "penalties": scored.penalties,
+                    "reasons": scored.reasons,
+                }
+            )
 
         if not details:
-            pytest.fail("Found real job links, but could not extract any authoritative job details.")
+            pytest.fail("Found real job links, but could not extract authoritative job details.")
 
         (artifact_dir / "dry_run_pipeline.json").write_text(
             json.dumps(
@@ -308,4 +238,4 @@ def test_naukri_live_search_extract_and_score():
             encoding="utf-8",
         )
     finally:
-        inspector.close()
+        agent.__exit__(None, None, None)
