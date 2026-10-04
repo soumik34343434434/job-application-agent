@@ -612,7 +612,7 @@ class NaukriAgent:
                 self.page.wait_for_timeout(500)
 
                 selected = False
-                target = re.compile(r"^2s*years?$", re.I)
+                target = re.compile(r"^2\s*years?$", re.I)
 
                 # Search visible option/text elements for exactly "2 years".
                 candidates = [
@@ -629,8 +629,8 @@ class NaukriAgent:
                             candidate = loc.nth(i)
                             if not candidate.is_visible() or not candidate.is_enabled():
                                 continue
-                            text = re.sub(r"s+", " ", (candidate.inner_text() or "")).strip()
-                            aria = re.sub(r"s+", " ", (candidate.get_attribute("aria-label") or "")).strip()
+                            text = re.sub(r"\s+", " ", (candidate.inner_text() or "")).strip()
+                            aria = re.sub(r"\s+", " ", (candidate.get_attribute("aria-label") or "")).strip()
                             if target.fullmatch(text) or target.fullmatch(aria):
                                 candidate.click()
                                 selected = True
@@ -659,7 +659,7 @@ class NaukriAgent:
                 # silently searching with the wrong experience.
                 try:
                     current_value = re.sub(
-                        r"s+",
+                        r"\s+",
                         " ",
                         (experience_field.input_value() or "").strip(),
                     )
@@ -668,7 +668,7 @@ class NaukriAgent:
 
                 try:
                     control_text = re.sub(
-                        r"s+",
+                        r"\s+",
                         " ",
                         (experience_field.inner_text() or "").strip(),
                     )
@@ -695,7 +695,7 @@ class NaukriAgent:
             if experience_field is not None:
                 # Never proceed if the dropdown visibly settled on Fresher.
                 try:
-                    settled = re.sub(r"s+", " ", (experience_field.input_value() or "").strip())
+                    settled = re.sub(r"\s+", " ", (experience_field.input_value() or "").strip())
                 except Exception:
                     settled = ""
                 if "fresher" in settled.lower():
