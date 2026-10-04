@@ -91,6 +91,35 @@ def cmd_naukri_login(args):
     print("Your existing Chrome profile, cookies, and logged-in sessions are reused.")
     print(browser.attach())
     print(browser.select_naukri_tab())
+
+    info = browser.page_info()
+    if "naukri.com" not in str(info.get("url", "")).lower():
+        browser.goto("https://www.naukri.com/")
+        info = browser.page_info()
+
+    if browser.is_naukri_logged_in():
+        print("Naukri session is already authenticated.")
+    else:
+        print("Naukri is not authenticated. Trying Google Sign-In in the existing Chrome tab...")
+        if browser.click_google_sign_in():
+            print("Google Sign-In clicked.")
+            print("Complete Google account selection / 2-step verification in Chrome if Google asks.")
+        else:
+            print("Could not find a Google Sign-In control automatically.")
+            print("Open the Naukri login page in the attached Chrome tab and complete it manually.")
+
+        print("Waiting up to 60 seconds for the Naukri session to become authenticated...")
+        import time
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            try:
+                if browser.is_naukri_logged_in():
+                    print("Naukri session is authenticated.")
+                    break
+            except Exception:
+                pass
+            time.sleep(1)
+
     info = browser.page_info()
     print(json.dumps({
         "url": info.get("url"),
