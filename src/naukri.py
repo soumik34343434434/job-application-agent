@@ -60,6 +60,9 @@ EXTERNAL_HOST_MARKERS = ("naukri.com", "naukri.co.in")
 CAPTCHA_WORDS = ("captcha", "i am not a robot", "verify you are human", "security check", "unusual activity")
 LOGIN_WORDS = ("login", "sign in", "log in")
 
+class HumanActionRequired(RuntimeError):
+    """A browser state requires a human action the agent will not bypass."""
+
 
 def setup_agent_browser():
     """Open the dedicated Naukri profile in normal Chrome for one-time Google login."""
@@ -562,16 +565,6 @@ class NaukriAgent:
             except Exception:
                 continue
         return "\n".join(parts).lower()
-
-    def _artifact(self, label: str):
-        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", label)[:80]
-        ts = time.strftime("%Y%m%d-%H%M%S")
-        path = ARTIFACT_DIR / f"{ts}-{safe}.png"
-        try:
-            self.page.screenshot(path=str(path), full_page=True)
-        except Exception:
-            pass
-        return path
 
     def _human_blocker(self, reason: str, interactive: bool):
         artifact = self._artifact(reason.replace(" ", "_"))
