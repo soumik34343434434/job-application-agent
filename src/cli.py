@@ -103,35 +103,80 @@ def cmd_naukri_setup_browser(args):
         raise SystemExit(str(exc))
 
     print("Dedicated Naukri Chrome is running.")
-    print("After you finish logging in, leave that Chrome window open anddef cmd_naukri_login(args):
-    from .naukri import NaukriAgent, AGENT_BROWSER_DIR, setup_agent_browser
+    print("Finish the manual login there, then leave the Chrome window open.")
+    print("You can now run 'python3 -m src.cli naukri login' or 'scan'.")
+
+
+def cmd_naukri_login(args):
+    from .naukri import NaukriAgent, AGENT_BROWSER_DIR
 
     print("Checking the dedicated Naukri browser profile.")
     print(f"Persistent profile: {AGENT_BROWSER_DIR}")
     print("Your normal Chrome profile remains untouched.")
 
-    agent = NaukriAgent(headless=False, slow_mo=args.slow_mo)
     try:
-        agent.__enter__()
+        with NaukriAgent(headless=False, slow_mo=args.slow_mo) as agent:
+            agent.open_home()
+            if agent.is_logged_in():
+                print("Naukri session is authenticated.")
+                print("Playwright detached successfully; the dedicated Chrome remains open.")
+                return
+
+            print()
+            print("Naukri is not logged in in the dedicated profile.")
+            print("Use the dedicated Chrome window that's already open.")
+            print("Complete Naukri -> Login -> Sign in with Google.")
+            print("Leave that Chrome open, finish login, then rerun this command.")
     except RuntimeError as exc:
         raise SystemExit(str(exc))
 
-    try:
-        agent.open_home()
-        if agent.is_logged_in():
-            print("Naukri session is authenticated.")
-            print("The dedicated Chrome can remain open; Playwright will detach cleanly.")
-            return
 
-        print()
-        print("Naukri is not logged in in the dedicated profile.")
-        print("Use the dedicated Chrome window that is already open.")
-        print("Complete Naukri -> Login -> Sign in with Google there.")
-        print("Leave that Chrome open; then rerun this command.")
-        print()
-    finally:
-        agent.__exit__(None, None, None)
-ef main():
+def cmd_naukri_search(args):
+    from .naukri import NaukriAgent, print_jobs
+    with NaukriAgent(headless=False, slow_mo=args.slow_mo) as agent:
+        jobs = agent.search(args.query, args.location or "")
+        new_jobs = agent.ingest(jobs)
+        print(f"Found {len(jobs)} jobs; ingested {len(new_jobs)} new jobs.")
+        print_jobs(new_jobs)
+
+
+def cmd_naukri_scan(args):
+    from .naukri import NaukriAgent, print_jobs
+    with NaukriAgent(headless=False, slow_mo=args.slow_mo) as agent:
+        jobs = agent.scan_default(max_queries=args.max_queries, per_query=args.per_query)
+        print(f"Scanned/ingested {len(jobs)} new jobs.")
+        print_jobs(jobs)
+
+
+def cmd_naukri_apply(args):
+    from .naukri import NaukriAgent
+    with NaukriAgent(headless=False, slow_mo=args.slow_mo) as agent:
+        results = agent.auto_apply_from_queue(limit=args.limit, auto_submit=args.auto_submit)
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        print(f"Submitted today: {submitted_count_today()}/{load_profile()['targeting']['max_daily_applications']}")
+
+
+def cmd_naukri_autopilot(args):
+    from .naukri import NaukriAgent
+    with NaukriAgent(headless=False, slow_mo=args.slow_mo) as agent:
+        jobs = agent.scan_default(max_queries=args.scan_queries, per_query=args.per_query)
+        print(f"Scan complete. Added {len(jobs)} new target jobs.")
+        results = agent.auto_apply_from_queue(
+            limit=min(args.limit, load_profile()["targeting"]["max_daily_applications"]),
+            auto_submit=args.auto_submit,
+        )
+        print(json.dumps(
+            {
+                "scanned_added": len(jobs),
+                "application_results": results,
+                "submitted_today": submitted_count_today(),
+            },
+            indent=2,
+            ensure_ascii=False,
+        ))
+
+
+def main():
     init_db()
     p = argparse.ArgumentParser(description="Targeted job application assistant")
     sub = p.add_subparsers(required=True)
