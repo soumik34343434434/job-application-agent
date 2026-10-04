@@ -10,6 +10,7 @@ import json
 import os
 import re
 import time
+import subprocess
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from urllib.parse import quote_plus, urlparse
@@ -58,6 +59,38 @@ PREFERRED_LOCATIONS = [
 EXTERNAL_HOST_MARKERS = ("naukri.com", "naukri.co.in")
 CAPTCHA_WORDS = ("captcha", "i am not a robot", "verify you are human", "security check", "unusual activity")
 LOGIN_WORDS = ("login", "sign in", "log in")
+
+
+def setup_agent_browser():
+    """Open the dedicated Naukri profile in normal Chrome for one-time Google login."""
+    AGENT_BROWSER_DIR.mkdir(parents=True, exist_ok=True)
+    url = NAUKRI_HOME
+    if os.uname().sysname == "Darwin":
+        subprocess.Popen([
+            "open", "-na", "Google Chrome", "--args",
+            f"--user-data-dir={AGENT_BROWSER_DIR}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            url,
+        ])
+    else:
+        executable = os.getenv("BROWSER_EXECUTABLE_PATH")
+        if not executable:
+            for candidate in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
+                found = __import__("shutil").which(candidate)
+                if found:
+                    executable = found
+                    break
+        if not executable:
+            raise RuntimeError("Chrome executable not found; set BROWSER_EXECUTABLE_PATH.")
+        subprocess.Popen([
+            executable,
+            f"--user-data-dir={AGENT_BROWSER_DIR}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            url,
+        ])
+    return AGENT_BROWSER_DIR
 
 
 @dataclass
