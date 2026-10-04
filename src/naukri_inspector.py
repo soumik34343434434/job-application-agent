@@ -52,9 +52,9 @@ _SECRET_QUERY_KEYS = re.compile(
 )
 _EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I)
 _PHONE_RE = re.compile(r"(?<!\d)(?:\+?\d[\d\s().-]{8,}\d)(?!\d)")
-_BEARER_RE = re.compile(r"(?i)\\bbearer\\s+[A-Za-z0-9._~+/=-]+")
-_JWT_RE = re.compile(r"\\beyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\b")
-_LONG_SECRET_RE = re.compile(r"\\b[A-Za-z0-9_-]{40,}\\b")
+_BEARER_RE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+")
+_JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")
+_LONG_SECRET_RE = re.compile(r"\b[A-Za-z0-9_-]{40,}\b")
 
 
 def _redact_text(value: str, limit: int | None = None) -> str:
@@ -63,7 +63,7 @@ def _redact_text(value: str, limit: int | None = None) -> str:
     text = _PHONE_RE.sub("[REDACTED_PHONE]", text)
     text = _BEARER_RE.sub("Bearer [REDACTED_TOKEN]", text)
     text = _JWT_RE.sub("[REDACTED_JWT]", text)
-    text = re.sub(r"(?i)(authorization\\s*[:=]\\s*)[^,;\\n]+", r"\\1[REDACTED]", text)
+    text = re.sub(r"(?i)(authorization\s*[:=]\s*)[^,;\n]+", r"\1[REDACTED]", text)
     if limit is not None:
         return text[:limit]
     return text

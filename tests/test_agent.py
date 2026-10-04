@@ -10,7 +10,7 @@ PROFILE = json.loads((Path(__file__).parents[1] / 'data' / 'profile.json').read_
 
 def test_strong_vulnerability_role():
     r = score_job('Vulnerability Management Engineer', 'Qualys VM, remediation, vulnerability assessment, security operations', 'Example Co')
-    assert r.score >= 85
+    assert r.score >= 85, f"score={r.score} penalties={r.penalties} matched={r.matched} reasons={r.reasons}"
 
 
 def test_grc_is_low():
