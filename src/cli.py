@@ -87,8 +87,8 @@ def cmd_naukri_login(args):
     from .attached_browser import AttachedChrome
 
     browser = AttachedChrome(session="naukri", profile_dir_name="Default")
-    print("Attaching to your already-running Chrome via the Playwright Extension...")
-    print("Your existing Chrome profile, cookies, and logged-in sessions are reused.")
+    print("Attaching to your already-running Chrome via Chrome DevTools Protocol (CDP)...")
+    print("Your existing Default Chrome profile, cookies, and logged-in sessions are reused.")
     print(browser.attach())
     print(browser.select_naukri_tab())
 
