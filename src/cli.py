@@ -98,8 +98,11 @@ def cmd_naukri_login(args):
         browser.goto("https://www.naukri.com/")
         info = browser.page_info()
 
-    # Go directly to Naukri's login page before attempting Google sign-in.
-    browser.open_naukri_login()
+    # Naukri currently exposes login as a modal on the homepage.
+    if browser.open_naukri_login() != "true":
+        raise RuntimeError(
+            "Could not open Naukri's login modal. The Login control may have changed."
+        )
     import time
     time.sleep(1)
 
