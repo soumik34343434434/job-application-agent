@@ -26,7 +26,7 @@ jobs:
       - name: Tests
         env:
           PYTHONPATH: .
-        run: pytest -q
+        run: pytest -q -m "not live"
 
 
   live_naukri_probe:
@@ -44,7 +44,7 @@ jobs:
       - name: Public Naukri smoke probe
         env:
           PYTHONPATH: .
-        run: pytest -q tests/test_live_naukri.py -s
+        run: pytest -q -m live -s tests/test_live_naukri.py
       - name: Upload live probe artifacts
         if: always()
         uses: actions/upload-artifact@v4

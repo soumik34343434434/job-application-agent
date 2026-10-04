@@ -57,6 +57,13 @@ def test_public_naukri_homepage_search_surface(tmp_path):
             )
             page.screenshot(path=str(artifact_dir / "naukri_home_probe.png"), full_page=True)
 
+            access_denied = page.title().strip().lower() == "access denied" or "access denied" in body.lower()
+            if access_denied:
+                pytest.skip(
+                    "Naukri's edge layer denied access from this GitHub-hosted runner; "
+                    "the captured artifact is retained for diagnosis."
+                )
+
             assert any(
                 (x.get("placeholder") or "").lower() == "enter keyword / designation / companies"
                 for x in visible_inputs
