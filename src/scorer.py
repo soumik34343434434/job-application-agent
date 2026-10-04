@@ -106,8 +106,14 @@ def normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text.lower()).strip()
 
 
+def _term_in_blob(term: str, blob: str) -> bool:
+    """Match a keyword/phrase as a token, avoiding substring false positives."""
+    pattern = r"(?<!\\w)" + re.escape(normalize(term)) + r"(?!\\w)"
+    return re.search(pattern, blob) is not None
+
+
 def _has_any(blob: str, terms: list[str]) -> bool:
-    return any(term in blob for term in terms)
+    return any(_term_in_blob(term, blob) for term in terms)
 
 
 def _experience_minimum(blob: str) -> float | None:
@@ -135,7 +141,7 @@ def score_job(title: str, description: str, company: str = "") -> ScoreResult:
     penalties: List[str] = []
     reasons: List[str] = []
 
-    title_hits = [term for term in STRONG_TITLE_PATTERNS if term in title_n]
+    title_hits = [term for term in STRONG_TITLE_PATTERNS if _term_in_blob(term, title_n)]
     if title_hits:
         score += 22
         matched.extend(title_hits)
@@ -144,7 +150,7 @@ def score_job(title: str, description: str, company: str = "") -> ScoreResult:
     # Distinct, verified profile-skill overlaps are the main evidence of fit.
     skill_hits = []
     for term in PROFILE_SKILL_TERMS:
-        if term in blob and term not in skill_hits:
+        if _term_in_blob(term, blob) and term not in skill_hits:
             skill_hits.append(term)
     if skill_hits:
         score += min(30, 5 * len(skill_hits))
