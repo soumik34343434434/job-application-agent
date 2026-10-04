@@ -41,7 +41,7 @@ else:
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_HOST = os.getenv("NAUKRI_INSPECTOR_HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.getenv("NAUKRI_INSPECTOR_PORT", "8765"))
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-6-luna")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "")
 MAX_BODY_TEXT = int(os.getenv("NAUKRI_INSPECTOR_MAX_TEXT", "30000"))
 MAX_DOM_TEXT = int(os.getenv("NAUKRI_INSPECTOR_MAX_DOM", "60000"))
 MAX_NETWORK_EVENTS = int(os.getenv("NAUKRI_INSPECTOR_MAX_NETWORK", "500"))
