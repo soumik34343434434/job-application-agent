@@ -105,15 +105,21 @@ def cmd_naukri_login(args):
     print("Launching the dedicated Naukri browser profile.")
     print(f"Persistent profile: {AGENT_BROWSER_DIR}")
     print("Your normal Chrome profile remains untouched.")
+
     agent = NaukriAgent(headless=False, slow_mo=args.slow_mo)
-    agent.__enter__()
     try:
-        agent.ensure_logged_in()
-        print("Naukri login/session confirmed.")
-        print("The dedicated Naukri browser stays open. Press Enter here when you want to close it.")
-        input()
-    finally:
-        agent.__exit__(None, None, None)
+        agent.__enter__()
+        try:
+            agent.ensure_logged_in()
+            print("Naukri login/session confirmed.")
+            print("The dedicated Naukri browser stays open. Press Enter here when you want to close it.")
+            input()
+        finally:
+            agent.__exit__(None, None, None)
+    except Exception as exc:
+        print(f"\nNaukri agent could not start or verify the session: {exc}")
+        print("Your normal Chrome profile is unaffected.")
+        raise
 
 
 def cmd_naukri_scan(args):
