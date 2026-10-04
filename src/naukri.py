@@ -589,45 +589,102 @@ class NaukriAgent:
             keyword.fill(query)
             self.page.wait_for_timeout(400)
 
-            # Select 2 years in the current Naukri experience control when it is
-            # available. The field is a dropdown on the current header search UI.
+            # Select 2 years in the current Naukri experience control.
+            # Naukri renders this control as a dropdown; do not fall back to
+            # typing/pressing Enter because that can select "Fresher".
             if experience_field:
                 experience_field.click()
-                self.page.wait_for_timeout(350)
+                self.page.wait_for_timeout(500)
+
                 selected = False
-                option_locators = [
-                    self.page.get_by_role("option", name=re.compile(r"^2\\s*years?$", re.I)),
-                    self.page.get_by_text(re.compile(r"^2\\s*years?$", re.I)),
+                target = re.compile(r"^2s*years?$", re.I)
+
+                # Search visible option/text elements for exactly "2 years".
+                candidates = [
+                    self.page.get_by_role("option", name=target),
+                    self.page.get_by_text(target),
+                    self.page.locator("li"),
                     self.page.locator('[role="option"]'),
+                    self.page.locator("div"),
                 ]
-                for opt in option_locators:
-                    for i in range(min(opt.count(), 20)):
-                        candidate = opt.nth(i)
-                        try:
+
+                for loc in candidates:
+                    try:
+                        for i in range(min(loc.count(), 100)):
+                            candidate = loc.nth(i)
                             if not candidate.is_visible() or not candidate.is_enabled():
                                 continue
-                            text = re.sub(r"\\s+", " ", (candidate.inner_text() or "")).strip()
-                            aria = (candidate.get_attribute("aria-label") or "").strip()
-                            if re.fullmatch(r"2\\s*years?", text or aria, re.I):
+                            text = re.sub(r"s+", " ", (candidate.inner_text() or "")).strip()
+                            aria = re.sub(r"s+", " ", (candidate.get_attribute("aria-label") or "")).strip()
+                            if target.fullmatch(text) or target.fullmatch(aria):
                                 candidate.click()
                                 selected = True
+                                self.page.wait_for_timeout(400)
                                 break
-                        except Exception:
-                            continue
+                    except Exception:
+                        continue
                     if selected:
                         break
 
-                # Some builds render an editable text input rather than a role
-                # option list. Fill it as a fallback.
                 if not selected:
+                    # Keyboard fallback: Naukri's list starts with Fresher, then
+                    # 1 year, then 2 years on the current UI. Two ArrowDown presses
+                    # therefore targets 2 years without selecting Fresher.
                     try:
-                        experience_field.fill(SEARCH_EXPERIENCE)
+                        experience_field.press("ArrowDown")
+                        experience_field.press("ArrowDown")
                         experience_field.press("Enter")
-                        self.page.wait_for_timeout(300)
+                        self.page.wait_for_timeout(400)
                         selected = True
                     except Exception:
                         pass
 
+                # Verify the visible control no longer says Fresher. If the
+                # selection could not be verified, fail the search rather than
+                # silently searching with the wrong experience.
+                try:
+                    current_value = re.sub(
+                        r"s+",
+                        " ",
+                        (experience_field.input_value() or "").strip(),
+                    )
+                except Exception:
+                    current_value = ""
+
+                try:
+                    control_text = re.sub(
+                        r"s+",
+                        " ",
+                        (experience_field.inner_text() or "").strip(),
+                    )
+                except Exception:
+                    control_text = ""
+
+                selected_blob = f"{current_value} {control_text}".strip()
+                if "fresher" in selected_blob.lower():
+                    # One retry using exact visible text, because an earlier
+                    # keyboard fallback may have landed on the first item.
+                    try:
+                        experience_field.click()
+                        self.page.wait_for_timeout(250)
+                        exact = self.page.get_by_text(target)
+                        for i in range(min(exact.count(), 20)):
+                            item = exact.nth(i)
+                            if item.is_visible() and item.is_enabled():
+                                item.click()
+                                self.page.wait_for_timeout(300)
+                                break
+                    except Exception:
+                        pass
+
+            if experience_field is not None:
+                # Never proceed if the dropdown visibly settled on Fresher.
+                try:
+                    settled = re.sub(r"s+", " ", (experience_field.input_value() or "").strip())
+                except Exception:
+                    settled = ""
+                if "fresher" in settled.lower():
+                    raise RuntimeError("Naukri experience selector settled on Fresher instead of 2 years.")
             location_field.fill(location)
             self.page.wait_for_timeout(800)
         except Exception:
