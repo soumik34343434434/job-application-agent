@@ -543,163 +543,396 @@ class NaukriAgent:
                 break
         return self.ingest(all_found)
 
+    def _all_contexts(self):
+        """Return the top page plus any live iframes used by Naukri's apply UI."""
+        contexts = [self.page]
+        try:
+            for frame in self.page.frames:
+                if frame is not self.page.main_frame:
+                    contexts.append(frame)
+        except Exception:
+            pass
+        return contexts
+
+    def _all_context_text(self) -> str:
+        parts = []
+        for context in self._all_contexts():
+            try:
+                parts.append(context.locator("body").inner_text(timeout=2500))
+            except Exception:
+                continue
+        return "\n".join(parts).lower()
+
+    def _artifact(self, label: str):
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", label)[:80]
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        path = ARTIFACT_DIR / f"{ts}-{safe}.png"
+        try:
+            self.page.screenshot(path=str(path), full_page=True)
+        except Exception:
+            pass
+        return path
+
+    def _human_blocker(self, reason: str, interactive: bool):
+        artifact = self._artifact(reason.replace(" ", "_"))
+        if interactive:
+            self.wait_for_human(reason)
+            return
+        raise HumanActionRequired(f"{reason}. Screenshot: {artifact}")
+
+    def _verification_guard(self, reason: str, interactive: bool):
+        if self.needs_human_verification():
+            self._human_blocker(reason, interactive)
+
     def _safe_click_apply(self) -> bool:
-        patterns = [r"^apply$", r"apply now", r"apply on naukri", r"quick apply"]
-        for pat in patterns:
-            locators = [
-                self.page.get_by_role("button", name=re.compile(pat, re.I)),
-                self.page.get_by_role("link", name=re.compile(pat, re.I)),
-                self.page.get_by_text(re.compile(pat, re.I)),
-            ]
-            for loc in locators:
-                try:
-                    if loc.count():
-                        loc.first.scroll_into_view_if_needed()
-                        loc.first.click()
-                        return True
-                except Exception:
-                    continue
+        patterns = [
+            r"^apply$",
+            r"apply now",
+            r"apply on naukri",
+            r"quick apply",
+            r"apply for this job",
+        ]
+        existing_pages = list(self.context.pages) if self.context else [self.page]
+
+        for context in self._all_contexts():
+            for pat in patterns:
+                locators = [
+                    context.get_by_role("button", name=re.compile(pat, re.I)),
+                    context.get_by_role("link", name=re.compile(pat, re.I)),
+                    context.get_by_text(re.compile(pat, re.I)),
+                ]
+                for loc in locators:
+                    try:
+                        if loc.count():
+                            loc.first.scroll_into_view_if_needed()
+                            loc.first.click()
+                            self.page.wait_for_timeout(1500)
+                            if self.context:
+                                current_pages = self.context.pages
+                                if len(current_pages) > len(existing_pages):
+                                    self.page = current_pages[-1]
+                                    self.page.set_default_timeout(12000)
+                            return True
+                    except Exception:
+                        continue
         return False
 
+    def _host_is_naukri(self, host: str) -> bool:
+        host = host.lower().split(":")[0]
+        return any(host == marker or host.endswith("." + marker) for marker in EXTERNAL_HOST_MARKERS)
+
     def _is_internal(self) -> bool:
-        host = urlparse(self.page.url).netloc.lower()
-        return any(marker in host for marker in EXTERNAL_HOST_MARKERS)
+        """Allow auto-submit only when the active application remains on Naukri."""
+        try:
+            hosts = {urlparse(self.page.url).netloc.lower()}
+            for frame in self.page.frames:
+                src = frame.url or ""
+                if src and not src.startswith(("about:", "data:")):
+                    hosts.add(urlparse(src).netloc.lower())
+            hosts.discard("")
+            return bool(hosts) and all(self._host_is_naukri(host) for host in hosts)
+        except Exception:
+            return False
 
     def _fill_input_by_label(self, labels: list[str], value: str) -> bool:
-        for label in labels:
-            try:
-                loc = self.page.get_by_label(re.compile(label, re.I), exact=False)
-                if loc.count():
-                    loc.first.fill(value)
-                    return True
-            except Exception:
-                pass
+        for context in self._all_contexts():
+            for label in labels:
+                try:
+                    loc = context.get_by_label(re.compile(label, re.I), exact=False)
+                    if loc.count():
+                        loc.first.fill(value)
+                        return True
+                except Exception:
+                    pass
+        return False
+
+    def _fill_select_by_label(self, labels: list[str], values: list[str]) -> bool:
+        for context in self._all_contexts():
+            for label in labels:
+                try:
+                    loc = context.get_by_label(re.compile(label, re.I), exact=False)
+                    if loc.count():
+                        for value in values:
+                            try:
+                                loc.first.select_option(label=value)
+                                return True
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
         return False
 
     def _fill_common_fields(self, profile: dict, resume_path: Path):
-        self._fill_input_by_label(["full name", "name"], profile.get("name", ""))
-        self._fill_input_by_label(["email", "email id"], profile.get("email", ""))
-        self._fill_input_by_label(["mobile", "phone"], profile.get("phone", ""))
+        self._fill_input_by_label(["full name", "candidate name", "name"], profile.get("name", ""))
+        self._fill_input_by_label(["email", "email id", "email address"], profile.get("email", ""))
+        self._fill_input_by_label(["mobile", "mobile number", "phone", "phone number"], profile.get("phone", ""))
 
-        file_inputs = self.page.locator('input[type="file"]')
-        if file_inputs.count() and resume_path.exists():
+        for context in self._all_contexts():
+            file_inputs = context.locator('input[type="file"]')
             try:
-                file_inputs.first.set_input_files(str(resume_path))
+                if file_inputs.count() and resume_path.exists():
+                    file_inputs.first.set_input_files(str(resume_path))
+                    break
             except Exception:
                 pass
 
-        text = self._body_text()
-        # Safe, verified numeric/text fields only.
+        text = self._all_context_text()
+
         if re.search(r"notice period|availability", text, re.I):
             self._fill_input_by_label(["notice period", "availability"], "60 days")
+            self._fill_select_by_label(
+                ["notice period", "availability"],
+                ["60 days", "60 Days", "2 Months", "2 month", "2 Months or less"],
+            )
+
         if re.search(r"current.*ctc|current.*salary", text, re.I):
-            self._fill_input_by_label(["current ctc", "current salary"], "4.5 LPA")
+            self._fill_input_by_label(["current ctc", "current salary", "current compensation"], "4.5 LPA")
+
+        if re.search(r"expected.*ctc|expected.*salary|expected.*compensation", text, re.I):
+            # Keep this conservative: only fill a free-text expected-compensation field.
+            self._fill_input_by_label(
+                ["expected ctc", "expected salary", "expected compensation"],
+                "8-16 LPA",
+            )
+
         if re.search(r"years.*experience|experience.*years|total experience", text, re.I):
-            self._fill_input_by_label(["total experience", "years of experience", "experience"], "2")
+            self._fill_input_by_label(
+                ["total experience", "years of experience", "experience"],
+                "2+ years",
+            )
+
         if re.search(r"relocat", text, re.I):
-            # Radio/select controls vary too much for blind submission. Handle obvious labels only.
-            for answer in ["Yes", "YES"]:
-                try:
-                    choice = self.page.get_by_label(re.compile(r"yes", re.I), exact=True)
-                    if choice.count():
-                        choice.first.check()
-                        break
-                except Exception:
-                    pass
+            for context in self._all_contexts():
+                for answer in ("Yes", "YES"):
+                    try:
+                        choice = context.get_by_label(re.compile(r"^yes$", re.I), exact=True)
+                        if choice.count():
+                            choice.first.check()
+                            break
+                    except Exception:
+                        continue
 
     def _unknown_sensitive_questions(self) -> list[str]:
-        try:
-            forms = self.page.locator("form")
-            body = " ".join(forms.all_inner_texts()).lower() if forms.count() else self._body_text()
-        except Exception:
-            body = self._body_text()
+        body = self._all_context_text()
         flags = []
-        if re.search(r"work authorization|authorized to work|legally authorized|right to work|visa sponsorship|sponsorship", body, re.I):
+        if re.search(
+            r"work authorization|authorized to work|legally authorized|right to work|visa sponsorship|sponsorship",
+            body,
+            re.I,
+        ):
             flags.append("Work authorization / visa sponsorship question")
         if re.search(r"citizenship|passport|security clearance|us person|government clearance", body, re.I):
             flags.append("Eligibility/citizenship/clearance question")
         return flags
 
+    def _application_success_detected(self) -> bool:
+        body = self._all_context_text()
+        success_markers = (
+            "application sent",
+            "applied successfully",
+            "application submitted",
+            "you have applied",
+            "application has been sent",
+        )
+        return any(marker in body for marker in success_markers)
+
+    def _already_applied_detected(self) -> bool:
+        body = self._all_context_text()
+        return any(
+            marker in body
+            for marker in (
+                "already applied",
+                "you have already applied",
+                "you already applied",
+            )
+        )
+
     def apply_job(self, job: dict, auto_submit: bool = False, resume_path: Path = BASE_RESUME) -> str:
-        daily_cap = 10
         from .cli import load_profile
+
         profile = load_profile()
-        daily_cap = profile["targeting"]["max_daily_applications"]
+        targeting = profile.get("targeting", {})
+        daily_cap = int(targeting.get("max_daily_applications", 10))
+
         if submitted_count_today() >= daily_cap:
             return "DAILY_CAP_REACHED"
 
         self.ensure_logged_in()
         self.page.goto(job["url"], wait_until="domcontentloaded")
         self.page.wait_for_timeout(1200)
-        if self.needs_human_verification():
-            self.wait_for_human("Naukri presented CAPTCHA/security verification on the job page")
+        self._verification_guard(
+            "Naukri presented CAPTCHA/security verification on the job page",
+            interactive=not auto_submit,
+        )
+
+        if self._already_applied_detected():
+            set_status(job["id"], "ALREADY_APPLIED", "Naukri indicates this application was already submitted.", daily_cap)
+            return "ALREADY_APPLIED"
+
         if not self._safe_click_apply():
             return "APPLY_BUTTON_NOT_FOUND"
+
         self.page.wait_for_timeout(1200)
-        if self.needs_human_verification():
-            self.wait_for_human("Naukri presented CAPTCHA/security verification during apply")
+        self._verification_guard(
+            "Naukri presented CAPTCHA/security verification during apply",
+            interactive=not auto_submit,
+        )
+
+        if self._already_applied_detected():
+            set_status(job["id"], "ALREADY_APPLIED", "Naukri indicates this application was already submitted.", daily_cap)
+            return "ALREADY_APPLIED"
 
         if not self._is_internal():
-            log_event(job["id"], "EXTERNAL_APPLICATION", "Apply flow redirected outside Naukri; not auto-submitted.")
-            set_status(job["id"], "EXTERNAL", "External application site detected; user takeover required.", daily_cap)
+            log_event(job["id"], "EXTERNAL_APPLICATION", "Apply flow left Naukri; automatic submission disabled.")
+            set_status(
+                job["id"],
+                "EXTERNAL",
+                "External application site detected; this job is not auto-submitted.",
+                daily_cap,
+            )
             return "EXTERNAL_APPLICATION"
 
-        flags = self._unknown_sensitive_questions()
         self._fill_common_fields(profile, resume_path)
+
+        flags = self._unknown_sensitive_questions()
         if flags:
             log_event(job["id"], "USER_ACTION_REQUIRED", "; ".join(flags))
-            self.wait_for_human("Please answer the application questions shown in the browser: " + "; ".join(flags))
+            if auto_submit:
+                artifact = self._artifact("sensitive_application_questions")
+                set_status(
+                    job["id"],
+                    "NEEDS_USER",
+                    f"Sensitive eligibility question detected: {'; '.join(flags)}. Screenshot: {artifact}",
+                    daily_cap,
+                )
+                return "NEEDS_USER"
+            self.wait_for_human(
+                "Please answer the application questions shown in the browser: " + "; ".join(flags)
+            )
 
         if not auto_submit:
             set_status(job["id"], "APPROVED", "Application form prepared; auto-submit disabled.", daily_cap)
             return "READY_TO_SUBMIT"
 
-        # Final safety: don't submit while a known sensitive/unknown question remains.
+        # Final safety: refuse to submit while a known sensitive/eligibility question remains.
         remaining = self._unknown_sensitive_questions()
         if remaining:
-            set_status(job["id"], "NEEDS_USER", "Sensitive question remains unanswered.", daily_cap)
+            set_status(
+                job["id"],
+                "NEEDS_USER",
+                "Sensitive eligibility question remains unanswered; not submitted.",
+                daily_cap,
+            )
             return "NEEDS_USER"
 
-        submit_patterns = [r"^submit$", r"submit application", r"apply$", r"send application"]
+        submit_patterns = [
+            r"^submit$",
+            r"submit application",
+            r"send application",
+            r"apply$",
+            r"finish",
+            r"continue",
+        ]
         submitted = False
-        for pat in submit_patterns:
-            for loc in [
-                self.page.get_by_role("button", name=re.compile(pat, re.I)),
-                self.page.get_by_role("link", name=re.compile(pat, re.I)),
-            ]:
-                try:
-                    if loc.count():
-                        loc.last.scroll_into_view_if_needed()
-                        loc.last.click()
-                        submitted = True
-                        break
-                except Exception:
-                    continue
+
+        for context in self._all_contexts():
+            for pat in submit_patterns:
+                for loc in [
+                    context.get_by_role("button", name=re.compile(pat, re.I)),
+                    context.get_by_role("link", name=re.compile(pat, re.I)),
+                ]:
+                    try:
+                        if loc.count():
+                            loc.last.scroll_into_view_if_needed()
+                            loc.last.click()
+                            submitted = True
+                            self.page.wait_for_timeout(1500)
+                            break
+                    except Exception:
+                        continue
+                if submitted:
+                    break
             if submitted:
                 break
+
         if not submitted:
-            set_status(job["id"], "NEEDS_USER", "Could not find a submit control.", daily_cap)
+            artifact = self._artifact("submit_button_not_found")
+            set_status(
+                job["id"],
+                "NEEDS_USER",
+                f"Could not find a submit control. Screenshot: {artifact}",
+                daily_cap,
+            )
             return "SUBMIT_BUTTON_NOT_FOUND"
 
-        self.page.wait_for_timeout(1500)
-        # Confirmation text is intentionally broad because Naukri uses variants.
-        body = self._body_text()
-        if any(x in body for x in ("application sent", "applied successfully", "application submitted", "you have applied")):
-            set_status(job["id"], "SUBMITTED", "Naukri application submitted by browser agent.", daily_cap)
+        self._verification_guard(
+            "Naukri presented CAPTCHA/security verification after submit",
+            interactive=False,
+        )
+
+        if self._application_success_detected():
+            set_status(job["id"], "SUBMITTED", "Naukri application submitted by the browser agent.", daily_cap)
             return "SUBMITTED"
-        set_status(job["id"], "SUBMITTED", "Submit control clicked; confirmation text not confidently detected.", daily_cap)
+
+        # A submit click without confirmation is not safe to label as success.
+        artifact = self._artifact("submission_confirmation_missing")
+        log_event(job["id"], "SUBMISSION_UNCONFIRMED", f"Submit control clicked; confirmation not detected. Screenshot: {artifact}")
+        set_status(
+            job["id"],
+            "NEEDS_USER",
+            f"Submit control clicked but success was not confirmed. Screenshot: {artifact}",
+            daily_cap,
+        )
         return "SUBMITTED_UNCONFIRMED"
 
     def auto_apply_from_queue(self, limit: int = 10, auto_submit: bool = False) -> list[dict]:
+        from .cli import load_profile
+
+        profile = load_profile()
+        targeting = profile.get("targeting", {})
+        daily_cap = int(targeting.get("max_daily_applications", 10))
+        min_submit_score = int(targeting.get("minimum_match_score_for_submit_recommendation", 85))
+
         results = []
         for row in review_queue():
-            if len(results) >= limit or submitted_count_today() >= 10:
+            if len(results) >= limit or submitted_count_today() >= daily_cap:
                 break
-            outcome = self.apply_job(dict(row), auto_submit=auto_submit)
-            results.append({"job_id": row["id"], "title": row["title"], "company": row["company"], "outcome": outcome})
-            if outcome in {"NEEDS_USER", "APPLY_BUTTON_NOT_FOUND", "DAILY_CAP_REACHED"}:
-                # Don't churn the queue on unresolved application forms.
+
+            score = int(row["score"] or 0)
+            if auto_submit and score < min_submit_score:
                 continue
+
+            try:
+                outcome = self.apply_job(dict(row), auto_submit=auto_submit)
+            except HumanActionRequired as exc:
+                note = str(exc)
+                set_status(row["id"], "NEEDS_USER", note, daily_cap)
+                outcome = "NEEDS_USER"
+            except RuntimeError as exc:
+                # A missing/expired login is a run-level failure; do not hammer Naukri
+                # with ten identical login attempts.
+                if "not logged in" in str(exc).lower():
+                    raise
+                note = f"Browser error: {exc}"
+                log_event(row["id"], "APPLICATION_ERROR", note)
+                set_status(row["id"], "ERROR", note, daily_cap)
+                outcome = "ERROR"
+            except Exception as exc:
+                note = f"Unexpected application error: {exc}"
+                log_event(row["id"], "APPLICATION_ERROR", note)
+                set_status(row["id"], "ERROR", note, daily_cap)
+                outcome = "ERROR"
+
+            results.append(
+                {
+                    "job_id": row["id"],
+                    "title": row["title"],
+                    "company": row["company"],
+                    "score": score,
+                    "outcome": outcome,
+                }
+            )
+
         return results
 
 
