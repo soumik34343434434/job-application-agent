@@ -122,7 +122,11 @@ class NaukriAgent:
         if direct:
             return data_dir, direct
 
-        return data_dir, None
+        raise RuntimeError(
+            f'Chrome profile "{requested}" was not found under {data_dir}. '
+            'Set CHROME_PROFILE_NAME to the exact Chrome profile name or '
+            'CHROME_PROFILE_DIR to the profile directory (for example "Profile 2").'
+        )
 
     def __enter__(self):
         ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
