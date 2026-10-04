@@ -131,6 +131,15 @@ def cmd_naukri_login(args):
         raise SystemExit(str(exc))
 
 
+def cmd_naukri_inspect(args):
+    from .naukri import NaukriAgent
+    try:
+        with NaukriAgent(headless=False, slow_mo=0) as agent:
+            print(json.dumps(agent.inspect_current_page(), indent=2, ensure_ascii=False))
+    except RuntimeError as exc:
+        raise SystemExit(str(exc))
+
+
 def cmd_naukri_search(args):
     from .naukri import NaukriAgent, print_jobs
     with NaukriAgent(headless=False, slow_mo=args.slow_mo) as agent:
@@ -195,6 +204,7 @@ def main():
     x = ns.add_parser("create-account"); x.add_argument("--slow-mo", type=int, default=150); x.set_defaults(func=cmd_naukri_create_account)
     x = ns.add_parser("setup-browser"); x.set_defaults(func=cmd_naukri_setup_browser)
     x = ns.add_parser("login"); x.add_argument("--slow-mo", type=int, default=150); x.set_defaults(func=cmd_naukri_login)
+    x = ns.add_parser("inspect"); x.set_defaults(func=cmd_naukri_inspect)
     x = ns.add_parser("search"); x.add_argument("--query", required=True); x.add_argument("--location", default=""); x.add_argument("--slow-mo", type=int, default=150); x.set_defaults(func=cmd_naukri_search)
     x = ns.add_parser("scan"); x.add_argument("--max-queries", type=int, default=6); x.add_argument("--per-query", type=int, default=12); x.add_argument("--slow-mo", type=int, default=150); x.set_defaults(func=cmd_naukri_scan)
     x = ns.add_parser("apply"); x.add_argument("--limit", type=int, default=10); x.add_argument("--auto-submit", action="store_true", help="Actually submit forms; omit for prepare-only mode."); x.add_argument("--slow-mo", type=int, default=150); x.set_defaults(func=cmd_naukri_apply)
