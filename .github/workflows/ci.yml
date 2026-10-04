@@ -55,7 +55,7 @@ jobs:
 
 
   naukri_live_local:
-    runs-on: [self-hosted, macOS, naukri]
+    runs-on: [self-hosted, macOS, X64]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
