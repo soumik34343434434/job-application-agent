@@ -108,7 +108,7 @@ def normalize(text: str) -> str:
 
 def _term_in_blob(term: str, blob: str) -> bool:
     """Match a keyword/phrase as a token, avoiding substring false positives."""
-    pattern = r"(?<!\\w)" + re.escape(normalize(term)) + r"(?!\\w)"
+    pattern = r"(?<!\w)" + re.escape(normalize(term)) + r"(?!\w)"
     return re.search(pattern, blob) is not None
 
 
@@ -170,7 +170,7 @@ def score_job(title: str, description: str, company: str = "") -> ScoreResult:
         reasons.append("Role is strongly automotive/embedded-security specialized and the profile does not verify that background.")
 
     for term, penalty in NEGATIVE_PATTERNS.items():
-        if term in blob:
+        if _term_in_blob(term, blob):
             score -= penalty
             penalties.append(term)
 
