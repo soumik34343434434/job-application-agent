@@ -85,25 +85,25 @@ def cmd_naukri_create_account(args):
 
 
 def cmd_naukri_setup_browser(args):
-    from .naukri import setup_agent_browser, AGENT_BROWSER_DIR
+    from .naukri import setup_agent_browser, AGENT_BROWSER_DIR, AGENT_CDP_ENDPOINT
 
-    print("Opening a normal Chrome window for the dedicated Naukri profile.")
+    print("Opening/checking the dedicated Naukri Chrome.")
     print(f"Profile data: {AGENT_BROWSER_DIR}")
+    print(f"Automation endpoint: {AGENT_CDP_ENDPOINT}")
     print()
-    print("1. In the opened Chrome window, open Naukri.")
-    print("2. Click Login -> Sign in with Google.")
-    print("3. Complete Google verification normally.")
-    print("4. Confirm you are logged into Naukri.")
-    print("5. Quit that dedicated Chrome window normally (Chrome -> Quit Google Chrome).")
-    print("6. Only after it is fully closed, run 'python3 -m src.cli naukri login' or 'scan'.")
+    print("The dedicated Chrome will stay open.")
+    print("Log into Naukri manually there once using Login -> Sign in with Google.")
+    print("You do NOT need to close that Chrome for the agent to use it.")
+    print("Your normal Chrome profile remains untouched.")
     print()
+
     try:
         setup_agent_browser()
     except RuntimeError as exc:
         raise SystemExit(str(exc))
-    print("Dedicated Naukri Chrome opened.")
 
-def cmd_naukri_login(args):
+    print("Dedicated Naukri Chrome is running.")
+    print("After you finish logging in, leave that Chrome window open anddef cmd_naukri_login(args):
     from .naukri import NaukriAgent, AGENT_BROWSER_DIR, setup_agent_browser
 
     print("Checking the dedicated Naukri browser profile.")
@@ -114,76 +114,24 @@ def cmd_naukri_login(args):
     try:
         agent.__enter__()
     except RuntimeError as exc:
-        msg = str(exc)
-        if "profile is still in use" in msg.lower() or "opening in existing browser session" in msg.lower():
-            raise SystemExit(
-                msg
-                + "\n\nIMPORTANT: The dedicated Naukri Chrome is currently open. "
-                "Do not run login/scan while it is open. Finish the manual Google/Naukri "
-                "login there, quit that dedicated Chrome normally, then rerun this command."
-            )
-        raise
+        raise SystemExit(str(exc))
 
     try:
         agent.open_home()
         if agent.is_logged_in():
             print("Naukri session is authenticated.")
-            print("The dedicated automation browser is ready.")
-            print("Press Enter here when you want to close it.")
-            input()
+            print("The dedicated Chrome can remain open; Playwright will detach cleanly.")
             return
 
         print()
         print("Naukri is not logged in in the dedicated profile.")
-        print("Opening a NORMAL Chrome window for the one-time Google login.")
+        print("Use the dedicated Chrome window that is already open.")
         print("Complete Naukri -> Login -> Sign in with Google there.")
-        print("After you are fully logged in, quit that dedicated Chrome normally.")
+        print("Leave that Chrome open; then rerun this command.")
         print()
     finally:
         agent.__exit__(None, None, None)
-
-    try:
-        setup_agent_browser()
-    except RuntimeError as exc:
-        raise SystemExit(str(exc))
-    print("Setup window opened. After closing it, run this same command again.")
-
-def cmd_naukri_scan(args):
-    from .naukri import NaukriAgent, print_jobs
-    with NaukriAgent(headless=False, slow_mo=args.slow_mo) as agent:
-        jobs = agent.scan_default(max_queries=args.max_queries, per_query=args.per_query)
-        print(f"Scanned/ingested {len(jobs)} new jobs.")
-        print_jobs(jobs)
-
-
-def cmd_naukri_search(args):
-    from .naukri import NaukriAgent, print_jobs
-    with NaukriAgent(headless=False, slow_mo=args.slow_mo) as agent:
-        jobs = agent.search(args.query, args.location or "")
-        new_jobs = agent.ingest(jobs)
-        print(f"Found {len(jobs)} jobs; ingested {len(new_jobs)} new jobs.")
-        print_jobs(new_jobs)
-
-
-def cmd_naukri_apply(args):
-    from .naukri import NaukriAgent
-    with NaukriAgent(headless=False, slow_mo=args.slow_mo) as agent:
-        results = agent.auto_apply_from_queue(limit=args.limit, auto_submit=args.auto_submit)
-        print(json.dumps(results, indent=2, ensure_ascii=False))
-        print(f"Submitted today: {submitted_count_today()}/{load_profile()['targeting']['max_daily_applications']}")
-
-
-
-
-def cmd_naukri_autopilot(args):
-    from .naukri import NaukriAgent
-    with NaukriAgent(headless=False, slow_mo=args.slow_mo) as agent:
-        jobs = agent.scan_default(max_queries=args.scan_queries, per_query=args.per_query)
-        print(f"Scan complete. Added {len(jobs)} new target jobs.")
-        results = agent.auto_apply_from_queue(limit=min(args.limit, load_profile()["targeting"]["max_daily_applications"]), auto_submit=args.auto_submit)
-        print(json.dumps({"scanned_added": len(jobs), "application_results": results, "submitted_today": submitted_count_today()}, indent=2, ensure_ascii=False))
-
-def main():
+ef main():
     init_db()
     p = argparse.ArgumentParser(description="Targeted job application assistant")
     sub = p.add_subparsers(required=True)
