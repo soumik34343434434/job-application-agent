@@ -97,28 +97,47 @@ def cmd_naukri_login(args):
         browser.goto("https://www.naukri.com/")
         info = browser.page_info()
 
+    # Go directly to Naukri's login page before attempting Google sign-in.
+    browser.open_naukri_login()
+    import time
+    time.sleep(1)
+
     if browser.is_naukri_logged_in():
         print("Naukri session is already authenticated.")
     else:
-        print("Naukri is not authenticated. Trying Google Sign-In in the existing Chrome tab...")
+        print("Naukri is not authenticated. Opening Google Sign-In...")
         if browser.click_google_sign_in():
-            print("Google Sign-In clicked.")
-            print("Complete Google account selection / 2-step verification in Chrome if Google asks.")
-        else:
-            print("Could not find a Google Sign-In control automatically.")
-            print("Open the Naukri login page in the attached Chrome tab and complete it manually.")
+            print("Google Sign-In control clicked.")
+            print("If Google asks you to choose an account or complete 2-step verification, complete that in Chrome.")
 
-        print("Waiting up to 60 seconds for the Naukri session to become authenticated...")
-        import time
-        deadline = time.time() + 60
-        while time.time() < deadline:
-            try:
-                if browser.is_naukri_logged_in():
-                    print("Naukri session is authenticated.")
+            # A Google flow may open a new tab. Give the browser a moment and
+            # surface the current tabs for visibility.
+            time.sleep(2)
+            print(browser.run("tab-list"))
+
+            # Wait for the OAuth flow to return to an authenticated Naukri tab.
+            deadline = time.time() + 90
+            while time.time() < deadline:
+                try:
+                    tabs = browser.run("tab-list")
+                    matches = re.findall(
+                        r"(?m)^\s*-\s*(\d+):.*?https?://(?:www\.)?naukri\.com",
+                        tabs, re.I
+                    )
+                    for tab_id in matches:
+                        browser.run("tab-select", tab_id)
+                        if browser.is_naukri_logged_in():
+                            print("Naukri session is authenticated.")
+                            deadline = 0
+                            break
+                except Exception:
+                    pass
+                if deadline == 0:
                     break
-            except Exception:
-                pass
-            time.sleep(1)
+                time.sleep(1)
+        else:
+            print("Google Sign-In control was not detected on the Naukri login page.")
+            print("The Naukri login page is open in your Chrome tab for manual inspection.")
 
     info = browser.page_info()
     print(json.dumps({
