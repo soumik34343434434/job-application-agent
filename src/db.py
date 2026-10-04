@@ -74,10 +74,38 @@ def add_job(company, title, url, description, score, recommendation, fingerprint
 
 def find_duplicate(company, title, url, fingerprint):
     with connect() as c:
-        if fingerprint:
-            row = c.execute("SELECT * FROM jobs WHERE fingerprint=? ORDER BY id DESC LIMIT 1", (fingerprint,)).fetchone()
+        # URL is the strongest identity for a Naukri posting. Check it first so
+        # a changed/incorrect card parser cannot create a second row for the
+        # same listing with a different title/company combination.
+        canonical_url = (url or "").split("?")[0].strip().rstrip("/")
+        if canonical_url:
+            row = c.execute(
+                """
+                SELECT * FROM jobs
+                WHERE lower(rtrim(
+                    CASE
+                        WHEN instr(COALESCE(url, ''), '?') > 0
+                        THEN substr(url, 1, instr(url, '?') - 1)
+                        ELSE COALESCE(url, '')
+                    END,
+                    '/'
+                )) = lower(?)
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (canonical_url,),
+            ).fetchone()
             if row:
                 return row
+
+        if fingerprint:
+            row = c.execute(
+                "SELECT * FROM jobs WHERE fingerprint=? ORDER BY id DESC LIMIT 1",
+                (fingerprint,),
+            ).fetchone()
+            if row:
+                return row
+
         row = c.execute(
             "SELECT * FROM jobs WHERE lower(company)=lower(?) AND lower(title)=lower(?) ORDER BY id DESC LIMIT 1",
             (company.strip(), title.strip())
@@ -93,6 +121,19 @@ def list_jobs():
 def get_job(job_id):
     with connect() as c:
         return c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+
+
+def update_job_details(job_id, company, title, url, description, score, recommendation):
+    """Refresh a queued job with authoritative details from its job page."""
+    with connect() as c:
+        c.execute(
+            """
+            UPDATE jobs
+            SET company=?, title=?, url=?, description=?, score=?, recommendation=?
+            WHERE id=?
+            """,
+            (company, title, url, description, score, recommendation, job_id),
+        )
 
 
 def save_prep(job_id, prep_json):
