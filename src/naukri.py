@@ -39,6 +39,11 @@ NAUKRI_HOME = "https://www.naukri.com/"
 # from the user's normal Chrome profile so the agent can run without taking over
 # the user's everyday browser.
 AGENT_BROWSER_DIR = ROOT / ".browser" / "naukri_agent"
+# Keep one dedicated Chrome process owning this profile. Playwright attaches to it
+# over CDP instead of trying to launch a second browser against the same profile.
+AGENT_CDP_HOST = "127.0.0.1"
+AGENT_CDP_PORT = int(os.getenv("NAUKRI_CDP_PORT", "9229"))
+AGENT_CDP_ENDPOINT = f"http://{AGENT_CDP_HOST}:{AGENT_CDP_PORT}"
 
 DEFAULT_QUERIES = [
     "Cybersecurity Engineer",
@@ -64,14 +69,36 @@ class HumanActionRequired(RuntimeError):
     """A browser state requires a human action the agent will not bypass."""
 
 
+def _cdp_is_available() -> bool:
+    try:
+        from urllib.request import urlopen
+        with urlopen(f"{AGENT_CDP_ENDPOINT}/json/version", timeout=0.8) as response:
+            return response.status == 200
+    except Exception:
+        return False
+
+
 def setup_agent_browser():
-    """Open the dedicated Naukri profile in normal Chrome for one-time Google login."""
+    """Launch one normal Chrome instance for the dedicated Naukri profile.
+
+    The browser is intentionally kept running. Playwright later attaches to this
+    exact browser over CDP, so there is never a profile-lock race.
+    """
     AGENT_BROWSER_DIR.mkdir(parents=True, exist_ok=True)
+
+    if _cdp_is_available():
+        return AGENT_BROWSER_DIR
+
     url = NAUKRI_HOME
     if os.uname().sysname == "Darwin":
+        executable = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        if not Path(executable).exists():
+            raise RuntimeError(f"Google Chrome executable not found at {executable}.")
         subprocess.Popen([
-            "open", "-na", "Google Chrome", "--args",
+            executable,
             f"--user-data-dir={AGENT_BROWSER_DIR}",
+            f"--remote-debugging-address={AGENT_CDP_HOST}",
+            f"--remote-debugging-port={AGENT_CDP_PORT}",
             "--no-first-run",
             "--no-default-browser-check",
             url,
@@ -89,11 +116,22 @@ def setup_agent_browser():
         subprocess.Popen([
             executable,
             f"--user-data-dir={AGENT_BROWSER_DIR}",
+            f"--remote-debugging-address={AGENT_CDP_HOST}",
+            f"--remote-debugging-port={AGENT_CDP_PORT}",
             "--no-first-run",
             "--no-default-browser-check",
             url,
         ])
-    return AGENT_BROWSER_DIR
+
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        if _cdp_is_available():
+            return AGENT_BROWSER_DIR
+        time.sleep(0.25)
+
+    raise RuntimeError(
+        f"Dedicated Chrome started but CDP did not become available at {AGENT_CDP_ENDPOINT}."
+    )
 
 
 @dataclass
@@ -114,38 +152,6 @@ class FoundJob:
 
 
 class NaukriAgent:
-    @staticmethod
-    def _clear_stale_chrome_profile_lock():
-        """Remove stale Chrome singleton locks only when no process owns this profile."""
-        profile = str(AGENT_BROWSER_DIR)
-        try:
-            result = subprocess.run(
-                ["pgrep", "-f", profile],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            pids = [p.strip() for p in result.stdout.splitlines() if p.strip()]
-        except Exception:
-            pids = []
-
-        if pids:
-            raise RuntimeError(
-                "The dedicated Naukri Chrome profile is still in use by process(es) "
-                + ", ".join(pids)
-                + ". Quit only that dedicated Naukri Chrome window/app, then retry."
-            )
-
-        # Chrome writes these singleton files into a user-data-dir. They can be
-        # left behind after an abnormal close. Never delete cookies/session data.
-        for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
-            path = AGENT_BROWSER_DIR / name
-            try:
-                if path.exists() or path.is_symlink():
-                    path.unlink()
-            except OSError:
-                pass
-
     def __init__(self, headless: bool = False, slow_mo: int = 150):
         if sync_playwright is None:
             raise RuntimeError(
@@ -154,6 +160,7 @@ class NaukriAgent:
         self.headless = headless
         self.slow_mo = slow_mo
         self._pw = None
+        self.browser = None
         self.context = None
         self.page = None
         self.browser_user_data_dir = None
@@ -162,47 +169,29 @@ class NaukriAgent:
     def __enter__(self):
         ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
         AGENT_BROWSER_DIR.mkdir(parents=True, exist_ok=True)
-        self._clear_stale_chrome_profile_lock()
+
+        # A single dedicated Chrome owns the profile. We attach to that existing
+        # browser through CDP rather than using launch_persistent_context(), which
+        # would collide with an already-running Chrome profile.
+        setup_agent_browser()
         self._pw = sync_playwright().start()
+        self.browser = self._pw.chromium.connect_over_cdp(AGENT_CDP_ENDPOINT)
+        if not self.browser.contexts:
+            raise RuntimeError("Connected to dedicated Chrome, but no browser context is available.")
 
-        # Use a dedicated persistent Chrome profile. The user can complete
-        # Google Sign-In once inside this profile; subsequent runs reuse the
-        # persisted Naukri session without touching the user's normal Chrome.
-        launch_kwargs = dict(
-            headless=self.headless,
-            slow_mo=self.slow_mo,
-            viewport={"width": 1440, "height": 1000},
-            accept_downloads=True,
-            channel=os.getenv("BROWSER_CHANNEL", "chrome"),
-        )
-
-        executable = os.getenv("BROWSER_EXECUTABLE_PATH")
-        if executable:
-            launch_kwargs["executable_path"] = executable
-
-        self.context = self._pw.chromium.launch_persistent_context(
-            str(AGENT_BROWSER_DIR),
-            **launch_kwargs,
-        )
+        self.context = self.browser.contexts[0]
         self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
         self.page.set_default_timeout(12000)
         return self
 
-
     def __exit__(self, exc_type, exc, tb):
-        try:
-            if self.context:
-                try:
-                    self.context.close()
-                except Exception:
-                    # The browser may already have closed; cleanup should remain safe.
-                    pass
-        finally:
-            if self._pw:
-                try:
-                    self._pw.stop()
-                except Exception:
-                    pass
+        # Detach Playwright only. The dedicated Chrome stays running and keeps
+        # owning the profile; this removes the need for manual close/reopen steps.
+        if self._pw:
+            try:
+                self._pw.stop()
+            except Exception:
+                pass
 
 
     def _artifact(self, label: str):
