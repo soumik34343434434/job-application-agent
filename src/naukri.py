@@ -547,8 +547,10 @@ class NaukriAgent:
             if location:
                 url += f"&location={quote_plus(location)}"
             self.page.goto(url, wait_until="domcontentloaded")
-            self.page.wait_for_timeout(2200)
+            self.page.wait_for_timeout(4000)
             self._set_relevance_sort()
+            # Give client-side result cards one more chance to render.
+            self.page.wait_for_timeout(2500)
 
         if self.needs_human_verification():
             self.wait_for_human("Naukri presented CAPTCHA/security verification during search")
@@ -556,65 +558,128 @@ class NaukriAgent:
 
 
     def _extract_jobs(self) -> list[FoundJob]:
-        # Naukri job URLs may appear as /job-listings-... (no slash after
-        # job-listings) as well as /job/.... Do not assume the older URL shape.
-        links = self.page.locator('a[href*="job-listings"], a[href*="/job/"]')
-        count = min(links.count(), 100)
+        """Extract current Naukri result cards using multiple DOM strategies."""
         results: list[FoundJob] = []
         seen = set()
 
+        # Strategy 1: visible anchors with a job-like href.
+        anchors = self.page.locator('a[href*="job-listings"], a[href*="/job/"], a[href*="jobs"]')
+        try:
+            count = min(anchors.count(), 150)
+        except Exception:
+            count = 0
+
         for i in range(count):
-            a = links.nth(i)
+            a = anchors.nth(i)
             try:
+                if not a.is_visible():
+                    continue
                 href = a.get_attribute("href") or ""
-                title = (a.inner_text() or "").strip()
-                visible = a.is_visible()
+                title = re.sub(r"\s+", " ", (a.inner_text() or "")).strip()
             except Exception:
                 continue
 
-            if not visible or not href:
+            if not href:
                 continue
             if href.startswith("/"):
                 href = "https://www.naukri.com" + href
-
-            # Discard navigation links that merely contain the word "job".
-            if "job-listings" not in href.lower() and "/job/" not in href.lower():
-                continue
-            if href in seen:
+            host = urlparse(href).netloc.lower()
+            if host and not self._host_is_naukri(host):
                 continue
 
-            # Some result anchors have no useful text; derive the title from the
-            # nearest result/card container instead.
             blob = self._nearby_card_text(a)
-            blob_lines = [
-                re.sub(r"\s+", " ", x).strip()
-                for x in blob.splitlines()
-                if x.strip()
-            ]
             if not title or len(title) < 3:
-                for line in blob_lines[:8]:
-                    if len(line) >= 4 and len(line) <= 140:
+                for line in [x.strip() for x in blob.splitlines() if x.strip()][:10]:
+                    if 4 <= len(line) <= 140:
+                        title = re.sub(r"\s+", " ", line)
+                        break
+            if not title:
+                continue
+
+            fingerprint_url = href.split("?")[0]
+            if fingerprint_url in seen:
+                continue
+            seen.add(fingerprint_url)
+
+            company, location, salary, experience, description = self._parse_card_blob(blob, title)
+            results.append(
+                FoundJob(title, company, location, salary, experience, href, description)
+            )
+
+        if results:
+            return results
+
+        # Strategy 2: known/current result-card containers. Naukri has changed
+        # class names over time, so inspect several likely card selectors.
+        card_selectors = [
+            "article",
+            '[class*="jobTuple"]',
+            '[class*="jobtuple"]',
+            '[class*="job-tuple"]',
+            '[class*="srp-jobtuple"]',
+            '[class*="cust-job-tuple"]',
+        ]
+
+        cards = None
+        for selector in card_selectors:
+            try:
+                loc = self.page.locator(selector)
+                if loc.count():
+                    cards = loc
+                    break
+            except Exception:
+                continue
+
+        if cards:
+            try:
+                count = min(cards.count(), 100)
+            except Exception:
+                count = 0
+
+            for i in range(count):
+                card = cards.nth(i)
+                try:
+                    if not card.is_visible():
+                        continue
+                    blob = card.inner_text(timeout=1500)
+                    links = card.locator("a[href]")
+                    href = ""
+                    for j in range(min(links.count(), 20)):
+                        candidate = links.nth(j).get_attribute("href") or ""
+                        if "job" in candidate.lower():
+                            href = candidate
+                            break
+                    if href.startswith("/"):
+                        href = "https://www.naukri.com" + href
+                except Exception:
+                    continue
+
+                if not href:
+                    continue
+                lines = [re.sub(r"\s+", " ", x).strip() for x in blob.splitlines() if x.strip()]
+                title = ""
+                for line in lines[:12]:
+                    low = line.lower()
+                    if (
+                        len(line) >= 4
+                        and len(line) <= 140
+                        and not any(x in low for x in ("jobs found", "posted", "apply", "not disclosed"))
+                    ):
                         title = line
                         break
+                if not title:
+                    continue
 
-            if not title or len(title) < 3:
-                continue
-
-            seen.add(href)
-            company, location, salary, experience, description = self._parse_card_blob(
-                blob, title
-            )
-            results.append(
-                FoundJob(
-                    title,
-                    company,
-                    location,
-                    salary,
-                    experience,
-                    href,
-                    description,
+                key = href.split("?")[0]
+                if key in seen:
+                    continue
+                seen.add(key)
+                company, location, salary, experience, description = self._parse_card_blob(
+                    blob, title
                 )
-            )
+                results.append(
+                    FoundJob(title, company, location, salary, experience, href, description)
+                )
 
         return results
 
