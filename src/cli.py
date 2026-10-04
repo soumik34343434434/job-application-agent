@@ -175,6 +175,14 @@ def cmd_naukri_enrich(args):
         print_jobs(jobs)
 
 
+def cmd_naukri_inspect_api(args):
+    from .naukri_inspector import run_server
+    print(f"Starting read-only Naukri inspector at http://{args.host}:{args.port}")
+    print(f"Docs: http://{args.host}:{args.port}/docs")
+    print("The inspector never clicks, fills, submits, or navigates Naukri.")
+    run_server(host=args.host, port=args.port)
+
+
 def cmd_naukri_job_detail(args):
     from .naukri import NaukriAgent
     from .cli import load_profile
@@ -265,6 +273,10 @@ def main():
     x = ns.add_parser("scan"); x.add_argument("--max-queries", type=int, default=6); x.add_argument("--per-query", type=int, default=12); x.add_argument("--slow-mo", type=int, default=150); x.set_defaults(func=cmd_naukri_scan)
     x = ns.add_parser("apply"); x.add_argument("--limit", type=int, default=10); x.add_argument("--auto-submit", action="store_true", help="Actually submit forms; omit for prepare-only mode."); x.add_argument("--slow-mo", type=int, default=150); x.set_defaults(func=cmd_naukri_apply)
     x = ns.add_parser("enrich"); x.add_argument("--limit", type=int, default=30); x.add_argument("--slow-mo", type=int, default=150); x.set_defaults(func=cmd_naukri_enrich)
+    x = ns.add_parser("inspect-api");
+    x.add_argument("--host", default="127.0.0.1");
+    x.add_argument("--port", type=int, default=8765);
+    x.set_defaults(func=cmd_naukri_inspect_api)
     x = ns.add_parser("job-detail"); x.add_argument("--job-id", type=int, required=True); x.add_argument("--slow-mo", type=int, default=150); x.set_defaults(func=cmd_naukri_job_detail)
 
     x = ns.add_parser("autopilot"); x.add_argument("--scan-queries", type=int, default=4); x.add_argument("--per-query", type=int, default=12); x.add_argument("--limit", type=int, default=10); x.add_argument("--auto-submit", action="store_true", help="Actually submit forms; omit for prepare-only mode."); x.add_argument("--slow-mo", type=int, default=150); x.set_defaults(func=cmd_naukri_autopilot)
