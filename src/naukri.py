@@ -61,6 +61,10 @@ PREFERRED_LOCATIONS = [
     "Pune", "Mumbai", "Noida", "Gurgaon", "Gurugram", "Delhi NCR", "Ahmedabad",
 ]
 
+# Naukri's current header search supports an experience selector. Start
+# searches at 2 years to keep the result set aligned with the verified profile.
+SEARCH_EXPERIENCE = "2 years"
+
 EXTERNAL_HOST_MARKERS = ("naukri.com", "naukri.co.in")
 CAPTCHA_WORDS = ("captcha", "i am not a robot", "verify you are human", "security check", "unusual activity")
 LOGIN_WORDS = ("login", "sign in", "log in")
@@ -553,6 +557,19 @@ class NaukriAgent:
             keyword = None
 
         try:
+            experience_field = self.page.locator('input[placeholder="Select experience"]')
+            experience_field = next(
+                (
+                    experience_field.nth(i)
+                    for i in range(experience_field.count())
+                    if experience_field.nth(i).is_visible() and experience_field.nth(i).is_enabled()
+                ),
+                None,
+            )
+        except Exception:
+            experience_field = None
+
+        try:
             location_field = self.page.locator('input[placeholder="Enter location"]')
             location_field = next(
                 (
@@ -571,6 +588,46 @@ class NaukriAgent:
         try:
             keyword.fill(query)
             self.page.wait_for_timeout(400)
+
+            # Select 2 years in the current Naukri experience control when it is
+            # available. The field is a dropdown on the current header search UI.
+            if experience_field:
+                experience_field.click()
+                self.page.wait_for_timeout(350)
+                selected = False
+                option_locators = [
+                    self.page.get_by_role("option", name=re.compile(r"^2\\s*years?$", re.I)),
+                    self.page.get_by_text(re.compile(r"^2\\s*years?$", re.I)),
+                    self.page.locator('[role="option"]'),
+                ]
+                for opt in option_locators:
+                    for i in range(min(opt.count(), 20)):
+                        candidate = opt.nth(i)
+                        try:
+                            if not candidate.is_visible() or not candidate.is_enabled():
+                                continue
+                            text = re.sub(r"\\s+", " ", (candidate.inner_text() or "")).strip()
+                            aria = (candidate.get_attribute("aria-label") or "").strip()
+                            if re.fullmatch(r"2\\s*years?", text or aria, re.I):
+                                candidate.click()
+                                selected = True
+                                break
+                        except Exception:
+                            continue
+                    if selected:
+                        break
+
+                # Some builds render an editable text input rather than a role
+                # option list. Fill it as a fallback.
+                if not selected:
+                    try:
+                        experience_field.fill(SEARCH_EXPERIENCE)
+                        experience_field.press("Enter")
+                        self.page.wait_for_timeout(300)
+                        selected = True
+                    except Exception:
+                        pass
+
             location_field.fill(location)
             self.page.wait_for_timeout(800)
         except Exception:
