@@ -2234,8 +2234,43 @@ class NaukriAgent:
         # ingest() opens authoritative detail pages and applies preferred-location
         # OR matching, experience/CTC hard filters, scoring and deduplication.
         added = self.ingest(found_jobs)
-        reviewable = sum(1 for job in added if (job.score or 0) >= profile["targeting"]["minimum_match_score_for_review"])
-        high_priority = sum(1 for job in added if (job.score or 0) >= profile["targeting"]["minimum_match_score_for_submit_recommendation"])
+
+        # Materialize the calibrated application-review queue in score order.
+        # This is preparation only: no application action is performed here.
+        review_threshold = profile["targeting"]["minimum_match_score_for_review"]
+        submit_threshold = profile["targeting"]["minimum_match_score_for_submit_recommendation"]
+        review_jobs = [job for job in added if (job.score or 0) >= review_threshold]
+        review_jobs.sort(key=lambda job: (job.score or 0), reverse=True)
+        queue_path = ARTIFACT_DIR / "calibrated_application_queue.json"
+        try:
+            queue_items = []
+            for rank, job in enumerate(review_jobs, 1):
+                queue_items.append({
+                    "rank": rank,
+                    "job_id": job.job_id,
+                    "company": job.company,
+                    "title": job.title,
+                    "score": job.score,
+                    "recommendation": job.recommendation,
+                    "url": job.url,
+                })
+            queue_path.write_text(
+                json.dumps({
+                    "queue": "calibrated_application_review_queue",
+                    "total_prepared": len(queue_items),
+                    "daily_cap": profile["targeting"]["max_daily_applications"],
+                    "today_batch": queue_items[:profile["targeting"]["max_daily_applications"]],
+                    "remaining": queue_items[profile["targeting"]["max_daily_applications"]:],
+                    "auto_submit_enabled": False,
+                }, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            print(f"[scan] APPLICATION_QUEUE={queue_path} total={len(queue_items)} today_batch={min(len(queue_items), profile['targeting']['max_daily_applications'])}", flush=True)
+        except Exception as exc:
+            print(f"[scan] APPLICATION_QUEUE_ERROR={exc}", flush=True)
+
+        reviewable = sum(1 for job in added if (job.score or 0) >= review_threshold)
+        high_priority = sum(1 for job in added if (job.score or 0) >= submit_threshold)
         print(f"[scan] EVALUATED_NEW_JOBS={len(added)}", flush=True)
         print(f"[scan] REVIEWABLE_TARGETS={reviewable} HIGH_PRIORITY_TARGETS={high_priority}", flush=True)
         return added
