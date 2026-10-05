@@ -41,6 +41,20 @@ jobs:
           pip install -r requirements.txt pytest
           python -m playwright install --with-deps chromium
 
+      - name: Start virtual display
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+          Xvfb :99 -screen 0 1920x1080x24 -ac >/tmp/job-agent-xvfb.log 2>&1 &
+          xvfb_pid=$!
+          echo "DISPLAY=:99" >> "$GITHUB_ENV"
+          sleep 1
+          kill -0 "$xvfb_pid" 2>/dev/null || {
+            cat /tmp/job-agent-xvfb.log || true
+            exit 1
+          }
+
       - name: Restore runtime state
         env:
           NAUKRI_STATE_KEY: ${{ secrets.NAUKRI_STATE_KEY }}
@@ -83,6 +97,7 @@ jobs:
           PYTHONPATH: .
           JOB_AGENT_DB_PATH: ${{ github.workspace }}/runtime/applications.db
           NAUKRI_STORAGE_STATE_PATH: ${{ github.workspace }}/runtime/naukri.storage-state.json
+          NAUKRI_HEADLESS: "false"
           TZ: Asia/Kolkata
           # Fresh-machine fallback: these are optional. When present, the agent
           # can establish a new Naukri session instead of replaying copied state.
