@@ -7,7 +7,7 @@ This file is the visible audit trail for the Naukri agent build.
 
 **Current status:** live local browser work is active on the authenticated dedicated Chrome profile. The latest local fixes are pushed to `main`.
 
-**Working on now:** designation-aware Naukri discovery: check each Tier 1/Tier 2 role against live autocomplete, use Naukri's canonical designation when a harmless naming variant exists, search all preferred locations together, then route candidates through safe application gates.
+**Working on now:** OR-style Naukri retrieval: keep all 30 role intents, canonicalize them with autocomplete, run one Naukri search per role with `2 years` and unrestricted location, union/dedupe the result pool, then enforce preferred locations as an OR in authoritative job details and route candidates through scoring/safe application gates.
 
 ## What has been completed
 - Persistent dedicated Naukri Chrome over CDP.
@@ -26,15 +26,20 @@ This file is the visible audit trail for the Naukri agent build.
 - Harmless designation variants are normalized (for example `Cybersecurity Analyst` -> Naukri `Cyber Security Analyst`; `Identity & Access Management` -> `Identity access management`).
 - Unsupported related suggestions are not treated as matches (for example `IAM Engineer` is not accepted from `IAM Support Engineer`).
 - The `SOC Analyst L2 L3` group resolves to Naukri's recognized `SOC Analyst 2` variant; generic `SOC Analyst` is not added.
-- Default discovery sends all 13 preferred locations together instead of looping city-by-city.
-- Multi-location search preserves the full location string instead of selecting the first suggestion.
+- Preferred-location logic is now OR-based and applied locally from authoritative job details, avoiding the unsupported 30×13 search matrix.
+- Location aliases are normalized (`Bangalore`/`Bengaluru`, `Gurgaon`/`Gurugram`, `Secunderabad`/`Hyderabad`, `Delhi / NCR`/`Delhi NCR`) before preferred-location matching.
 - Naukri autocomplete refreshes are given a bounded second wait to avoid stale suggestions being mistaken for the next role.
 - Non-interactive search routes homepage verification challenges through the safe human-blocker path instead of waiting for terminal input.
 - Live search has a bounded retry for the authenticated header/navigation race.
+- The scan reuses the authenticated browser session across all role searches rather than re-validating login for every query.
+- Scorer backtest coverage now includes strong-role positives, GRC/audit/support/offensive/automotive negatives, fresher/under-experience cases, narrow Okta/Qualys roles, and location-alias edge cases.
 
 ## Validation status
 - Python source compilation: **passing locally**.
-- Live authenticated Naukri search: **passing**; real listing URLs returned.
+- Unit/backtest suite: **16 passed** in the targeted regression set.
+- Live authenticated Naukri search: **passing**; a live `Vulnerability Management` role search returned **20 real job cards**; the new OR-style scan path completed its smoke run without submission.
+- Database scorer backtest: **169 stored job rows** recomputed with the improved scorer; **18** scored >=70 and **6** scored >=85 at backtest time.
+- Backtest artifact: `outbox/browser_artifacts/model_backtest_report.json`.
 - Internal Naukri application-form path: **passing in prepare-only mode**; a real Apply form reached `READY_TO_SUBMIT`.
 - External application routing: **passing**; a real employer-hosted listing returned `EXTERNAL_APPLICATION`.
 - Submitted today during validation: **0**.

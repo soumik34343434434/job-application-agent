@@ -245,6 +245,7 @@ class NaukriAgent:
         self.browser_profile_dir = None
         self._last_role_recognized = None
         self._autocomplete_available = None
+        self._session_ready = False
 
     def __enter__(self):
         ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
@@ -438,8 +439,10 @@ class NaukriAgent:
                 interactive=interactive,
             )
         if self.is_logged_in():
+            self._session_ready = True
             return
 
+        self._session_ready = False
         raise RuntimeError(
             "Naukri is not logged in in the dedicated agent profile. "
             "Run 'python3 -m src.cli naukri setup-browser' once, complete "
@@ -1141,19 +1144,25 @@ class NaukriAgent:
             return False, []
 
     def _select_two_years(self, experience_field) -> bool:
-        """Use the live Naukri dropdown to select exactly 2 years."""
+        """Use the live Naukri dropdown to select exactly 2 years.
+
+        Use a DOM click for the option instead of Playwright's navigation-aware
+        click. Naukri's SPA occasionally causes that click to wait on an unrelated
+        navigation, which previously made otherwise-valid searches time out.
+        """
         if experience_field is None:
             return False
         try:
             experience_field.evaluate("(e) => e.click()")
-            self.page.wait_for_timeout(500)
+            self.page.wait_for_timeout(450)
             option = self.page.get_by_text("2 years", exact=True).first
             if not option.is_visible() or not option.is_enabled():
                 return False
-            option.click(timeout=2500)
-            self.page.wait_for_timeout(300)
-            value = re.sub(r"\s+", " ", (experience_field.input_value() or "").strip())
-            return "fresher" not in value.lower()
+            option.evaluate("(e) => e.click()")
+            # The exact visible option is authoritative; Naukri often stores the
+            # selected value in React state rather than in the hidden input value.
+            self.page.wait_for_timeout(250)
+            return True
         except Exception:
             return False
 
@@ -1429,8 +1438,10 @@ class NaukriAgent:
         location: str = "",
         interactive: bool = True,
         validate_role: bool = True,
+        ensure_login: bool = True,
     ) -> list[FoundJob]:
-        self.ensure_logged_in(interactive=interactive)
+        if ensure_login and not getattr(self, "_session_ready", False):
+            self.ensure_logged_in(interactive=interactive)
         # _fill_search_form performs the single bounded homepage navigation.
         # Avoid the previous duplicate goto() sequence, which made repeated role
         # searches unnecessarily sensitive to Naukri's SPA hydration state.
@@ -1898,12 +1909,38 @@ class NaukriAgent:
 
         return None
 
+    @staticmethod
+    def _normalize_location_for_matching(value: str) -> str:
+        """Normalize punctuation/aliases so preferred-location OR matching is robust."""
+        value = re.sub(r"[\/,&|]+", " ", (value or "").lower())
+        value = re.sub(r"[.()]+", " ", value)
+        value = re.sub(r"\s+", " ", value).strip()
+        aliases = {
+            "bangalore": "bengaluru",
+            "gurgaon": "gurugram",
+            "secunderabad": "hyderabad",
+            "delhi ncr": "delhi ncr",
+            "delhi  ncr": "delhi ncr",
+        }
+        for source, target in aliases.items():
+            value = re.sub(rf"(?<!\w){re.escape(source)}(?!\w)", target, value)
+        return value
+
     def _target_preference_ok(self, job: FoundJob, profile: dict) -> bool:
         targeting = profile.get("targeting", {})
-        preferred = [str(x).lower() for x in targeting.get("preferred_locations", [])]
+        preferred = [
+            self._normalize_location_for_matching(str(x))
+            for x in targeting.get("preferred_locations", [])
+        ]
 
-        loc_blob = (job.location or "").lower()
-        if loc_blob and preferred and not any(p in loc_blob for p in preferred):
+        loc_blob = self._normalize_location_for_matching(job.location or "")
+        if preferred and not loc_blob:
+            # A preferred-location constraint should never silently accept a job
+            # whose authoritative detail page provides no location evidence.
+            return False
+        if loc_blob and preferred and not any(
+            re.search(rf"(?<!\w){re.escape(p)}(?!\w)", loc_blob) for p in preferred if p
+        ):
             return False
 
         # Candidate has 2+ years. Use the structured field/URL first and only
@@ -2013,7 +2050,7 @@ class NaukriAgent:
         from .cli import load_profile
 
         profile = load_profile()
-        role_count = min(max(queries := max_queries, 0), len(DEFAULT_QUERIES))
+        role_count = min(max(max_queries, 0), len(DEFAULT_QUERIES))
         roles = DEFAULT_QUERIES[:role_count]
         if per_query < 1:
             raise ValueError("per_query must be >= 1")
@@ -2021,6 +2058,13 @@ class NaukriAgent:
         print(f"[scan] ROLE_SEARCHES={len(roles)}", flush=True)
         print("[scan] LOCATION_RETRIEVAL=unrestricted; LOCAL_LOCATION_LOGIC=OR", flush=True)
         print(f"[scan] EXPERIENCE_FILTER={SEARCH_EXPERIENCE}", flush=True)
+
+        try:
+            self.ensure_logged_in(interactive=False)
+        except RuntimeError as exc:
+            print(f"[scan] AUTH_ERROR: {exc}", flush=True)
+            return []
+        print("[scan] AUTHENTICATED_SESSION=READY", flush=True)
 
         # Canonicalize roles/locations first so the browser still follows the
         # user's autocomplete workflow and keeps an auditable mapping artifact.
@@ -2101,6 +2145,7 @@ class NaukriAgent:
                     query=query,
                     location="",
                     interactive=False,
+                    ensure_login=False,
                     # Autocomplete was already resolved above (or loaded from
                     # the verified mapping artifact). Do not re-open the dropdown
                     # for every search; that creates unnecessary SPA races.

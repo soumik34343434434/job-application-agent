@@ -33,7 +33,7 @@ def test_application_required_field_detection():
     </form>
     """
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
+        browser = pw.chromium.launch(headless=True, channel="chrome")
         page = browser.new_page()
         page.set_content(html)
         agent = NaukriAgent(headless=True, slow_mo=0)
@@ -71,7 +71,7 @@ def test_application_required_field_detection():
     </form>
     """
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
+        browser = pw.chromium.launch(headless=True, channel="chrome")
         page = browser.new_page()
         page.set_content(html)
         agent = NaukriAgent(headless=True, slow_mo=0)

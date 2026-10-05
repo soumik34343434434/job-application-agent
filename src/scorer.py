@@ -43,6 +43,7 @@ VERIFIED_SKILL_TERMS = {
     "security_operations": [
         "security operations",
         "incident investigation",
+        "incident response",
         "security monitoring",
     ],
     "itsm_operations": [
@@ -168,6 +169,11 @@ NEGATIVE_PATTERNS = {
     "soc l1": 28,
     "soc level 1": 28,
     "manual tester": 18,
+    "customer support": 18,
+    "support engineer": 18,
+    "fresher": 25,
+    "intern": 25,
+    "trainee": 20,
 }
 
 OFFENSIVE_SECURITY_TERMS = [
@@ -235,6 +241,65 @@ def _experience_minimum(blob: str) -> float | None:
     if plus:
         return float(plus.group(1))
 
+    # Single-value experience requirements such as "2 years experience" or
+    # "1 year required" are common on detail pages and cards.
+    single = re.search(
+        r"(?:(?:minimum|at least|required|experience|exp(?:erience)?)\s*(?:of|:)?\s*)"
+        r"(\d+(?:\.\d+)?)\s*(?:yrs?|years?)|"
+        r"(\d+(?:\.\d+)?)\s*(?:yrs?|years?)\s+(?:of\s+)?experience",
+        blob,
+    )
+    if single:
+        value = single.group(1) or single.group(2)
+        return float(value)
+
+    return None
+
+
+def _narrow_role_penalties(title_n: str, blob: str, verified_groups: list[str], role_hits: list[str]):
+    """Return modest penalties for tool-only/specialized roles the profile de-prioritizes."""
+    penalties = []
+    reasons = []
+    # Only penalize when the JD is dominated by the narrow tool/domain and lacks
+    # broader security evidence; genuine mixed security roles remain strong.
+    broad_groups = set(verified_groups) - {"iam_identity", "vulnerability_management"}
+    if _has_any(blob, ["okta"]) and role_hits == ["iam_identity"] and not broad_groups:
+        penalties.append(("okta_only", 18))
+        reasons.append("Role is dominated by Okta/IAM rather than broader security operations.")
+    elif _has_any(blob, ["iam", "identity and access management"]) and role_hits == ["iam_identity"] and not broad_groups:
+        penalties.append(("iam_only", 12))
+        reasons.append("Role is narrowly focused on IAM/identity administration.")
+    if _has_any(blob, ["qualys"]) and role_hits == ["vulnerability_management"] and len(verified_groups) <= 1:
+        penalties.append(("qualys_only", 10))
+        reasons.append("Role is narrowly centered on Qualys rather than broader security work.")
+    return penalties, reasons
+
+
+def _experience_ceiling(blob: str) -> float | None:
+    """Extract the highest required experience for explicit ranges/single values."""
+    matches = re.findall(
+        r"(\d+(?:\.\d+)?)\s*(?:-|–|to)\s*(\d+(?:\.\d+)?)\s*(?:yrs?|years?)",
+        blob,
+    )
+    if matches:
+        return max(float(b) for _, b in matches)
+
+    plus = re.search(r"(\d+(?:\.\d+)?)\s*\+\s*(?:yrs?|years?)", blob)
+    if plus:
+        # A plus requirement has no finite ceiling, so use the minimum as its
+        # effective requirement for the candidate's lower-bound check.
+        return float(plus.group(1))
+
+    single = re.search(
+        r"(?:(?:minimum|at least|required|experience|exp(?:erience)?)\s*(?:of|:)?\s*)"
+        r"(\d+(?:\.\d+)?)\s*(?:yrs?|years?)|"
+        r"(\d+(?:\.\d+)?)\s*(?:yrs?|years?)\s+(?:of\s+)?experience",
+        blob,
+    )
+    if single:
+        value = single.group(1) or single.group(2)
+        return float(value)
+
     return None
 
 
@@ -289,6 +354,12 @@ def score_job(title: str, description: str, company: str = "") -> ScoreResult:
         score += min(15, 5 * len(new_related))
         reasons.append("JD contains adjacent security-domain concepts transferable from the current security background.")
 
+    narrow_penalties, narrow_reasons = _narrow_role_penalties(title_n, blob, verified_groups, role_hits)
+    for label, penalty in narrow_penalties:
+        score -= penalty
+        penalties.append(label)
+    reasons.extend(narrow_reasons)
+
     if _has_any(blob, OFFENSIVE_SECURITY_TERMS):
         score -= 30
         penalties.append("offensive_security")
@@ -309,7 +380,14 @@ def score_job(title: str, description: str, company: str = "") -> ScoreResult:
             penalties.append(term)
 
     min_exp = _experience_minimum(blob)
-    if min_exp is not None:
+    max_exp = _experience_ceiling(blob)
+    if max_exp is not None and max_exp < 2:
+        score -= 30
+        penalties.append("experience_below_profile")
+        reasons.append(
+            f"Job's stated experience ceiling is about {max_exp:g} years, below the verified 2+ year profile."
+        )
+    elif min_exp is not None:
         if min_exp > 2.5:
             score -= 30
             penalties.append("experience_above_profile")

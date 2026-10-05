@@ -12,7 +12,7 @@ def test_public_naukri_homepage_search_surface(tmp_path):
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
+        browser = pw.chromium.launch(headless=True, channel="chrome")
         page = browser.new_page(viewport={"width": 1440, "height": 1000})
         try:
             page.goto("https://www.naukri.com/", wait_until="domcontentloaded", timeout=30000)
