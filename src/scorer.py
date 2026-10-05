@@ -192,6 +192,18 @@ OFFENSIVE_SECURITY_TERMS = [
     "offensive security",
 ]
 
+
+SPECIALIZED_TITLE_PENALTIES = {
+    "l0_l1": (18, [r"\bl0\s*/\s*l1\b", r"\bl0\b", r"\bl1\b"]),
+    "service_desk": (18, ["service desk"]),
+    "devops": (15, ["devops engineer", "devops"]),
+    "site_reliability": (15, ["site reliability engineer", "sre"]),
+    "product_engineering": (15, ["product engineer"]),
+    "application_security": (12, ["application security", "app security"]),
+    "application_admin": (8, ["application admin"]),
+    "threat_research": (12, ["threat researcher", "threat research"]),
+}
+
 AUTOMOTIVE_EMBEDDED_TERMS = [
     "automotive",
     "autosar",
@@ -360,12 +372,21 @@ def score_job(title: str, description: str, company: str = "") -> ScoreResult:
         penalties.append(label)
     reasons.extend(narrow_reasons)
 
-    if _has_any(blob, OFFENSIVE_SECURITY_TERMS):
+    offensive_hits = [term for term in OFFENSIVE_SECURITY_TERMS if _term_in_blob(term, blob)]
+    if offensive_hits:
         score -= 30
         penalties.append("offensive_security")
         reasons.append(
             "Role is strongly penetration-testing/red-team oriented rather than the current security-operations profile."
         )
+        # Multiple offensive indicators, or an explicitly offensive title, mean
+        # the job is not merely adjacent to the candidate's profile. Do not let
+        # unrelated security-tool overlap inflate it back into the application queue.
+        title_offensive = _has_any(title_n, OFFENSIVE_SECURITY_TERMS)
+        if len(offensive_hits) >= 2 or title_offensive:
+            score = min(score, 64)
+            penalties.append("offensive_dominant")
+            reasons.append("Offensive-security requirements are substantial enough to cap the match below the review queue.")
 
     if _has_any(blob, AUTOMOTIVE_EMBEDDED_TERMS):
         score -= 30
@@ -378,6 +399,27 @@ def score_job(title: str, description: str, company: str = "") -> ScoreResult:
         if _term_in_blob(term, blob):
             score -= penalty
             penalties.append(term)
+
+    # Penalize roles whose core designation is materially outside the candidate's
+    # security-operations / vulnerability / identity target. This prevents dense
+    # security keyword overlap from making DevOps, SRE, Service Desk, Product
+    # Engineering, AppSec, or specialist research roles look equivalent to a
+    # direct security-engineering vacancy.
+    for label, (penalty, terms) in SPECIALIZED_TITLE_PENALTIES.items():
+        matched_title_term = any(
+            re.search(term, title_n) if term.startswith(r"\b") else _term_in_blob(term, title_n)
+            for term in terms
+        )
+        if matched_title_term:
+            score -= penalty
+            penalties.append(label)
+            reasons.append(f"Title indicates a specialized/non-target role lane: {label.replace('_', ' ')}.")
+            break
+
+    # Generic SOC Analyst should not be treated as L2/L3 merely from the title.
+    if _term_in_blob("soc analyst", title_n) and _has_any(blob, ["l1", "level 1", "tier 1", "first line"]):
+        score -= 18
+        penalties.append("soc_l1")
 
     min_exp = _experience_minimum(blob)
     max_exp = _experience_ceiling(blob)
