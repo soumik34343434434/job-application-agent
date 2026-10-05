@@ -17,6 +17,21 @@ def test_external_host_detection_logic_is_simple():
     assert "naukri.com" not in urlparse("https://careers.example.com/job/x").netloc
 
 
+def test_naukri_apply_confirmation_is_submission_success():
+    from playwright.sync_api import sync_playwright
+
+    html = '<main><h1>Applied to "Security Operations Analyst"</h1></main>'
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True, channel="chrome")
+        page = browser.new_page()
+        page.set_content(html)
+        agent = NaukriAgent(headless=True, slow_mo=0)
+        agent.page = page
+        agent.context = page.context
+        assert agent._application_success_detected() is True
+        browser.close()
+
+
 def test_application_required_field_detection():
     """Required-field guard works on a representative Naukri-like form."""
     from playwright.sync_api import sync_playwright

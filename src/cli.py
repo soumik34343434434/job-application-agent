@@ -1,11 +1,13 @@
 import argparse
 import json
 import re
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from .db import (
     init_db, add_job, list_jobs, find_duplicate, get_job, save_prep,
     set_status, review_queue, submitted_count_today,
+    start_agent_run, finish_agent_run, latest_agent_run, last_completed_agent_run,
 )
 from .scorer import score_job
 from .tailoring import prepare_application, prep_to_dict, fingerprint_job
@@ -228,6 +230,107 @@ def cmd_naukri_apply(args):
         print(f"Submitted today: {submitted_count_today()}/{load_profile()['targeting']['max_daily_applications']}")
 
 
+def _scheduled_run_due(profile):
+    schedule = profile.get("targeting", {}).get("application_schedule", {})
+    interval_hours = float(schedule.get("interval_hours", 72))
+    last = last_completed_agent_run()
+    if not last:
+        return True, None, interval_hours
+    finished = datetime.fromisoformat(last["finished_at"])
+    if finished.tzinfo is None:
+        finished = finished.replace(tzinfo=timezone.utc)
+    due_at = finished + timedelta(hours=interval_hours)
+    now = datetime.now(timezone.utc)
+    return now >= due_at, due_at, interval_hours
+
+
+def cmd_naukri_schedule_status(args):
+    profile = load_profile()
+    schedule = profile.get("targeting", {}).get("application_schedule", {})
+    latest = latest_agent_run()
+    due, due_at, interval_hours = _scheduled_run_due(profile)
+    payload = {
+        "enabled": bool(schedule.get("enabled", True)),
+        "applications_per_run": int(schedule.get("applications_per_run", 5)),
+        "interval_hours": interval_hours,
+        "auto_submit": bool(schedule.get("auto_submit", False)),
+        "due_now": due,
+        "next_due_at": due_at.isoformat() if due_at else "NOW",
+        "latest_run": dict(latest) if latest else None,
+        "submitted_today": submitted_count_today(),
+    }
+    print(json.dumps(payload, indent=2, ensure_ascii=False))
+
+
+def cmd_naukri_scheduled_run(args):
+    from .naukri import NaukriAgent
+
+    profile = load_profile()
+    targeting = profile.get("targeting", {})
+    schedule = targeting.get("application_schedule", {})
+    if not bool(schedule.get("enabled", True)) and not args.force:
+        print("Scheduled application run is disabled in profile.json.")
+        return
+
+    due, due_at, _ = _scheduled_run_due(profile)
+    if not due and not args.force:
+        print(json.dumps({
+            "status": "NOT_DUE",
+            "next_due_at": due_at.isoformat() if due_at else None,
+            "submitted_today": submitted_count_today(),
+        }, indent=2, ensure_ascii=False))
+        return
+
+    latest = latest_agent_run()
+    if latest and latest["status"] == "RUNNING":
+        print(json.dumps({
+            "status": "RUN_ALREADY_RUNNING",
+            "run_id": latest["id"],
+            "started_at": latest["started_at"],
+        }, indent=2, ensure_ascii=False))
+        return
+
+    limit = min(
+        int(args.limit or schedule.get("applications_per_run", 5)),
+        int(targeting.get("max_daily_applications", 10)),
+    )
+    # One run key per minute prevents duplicate scheduler launches from doing
+    # two identical application batches while still allowing a failed run to retry.
+    run_key = "scheduled-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M")
+    claimed = start_agent_run(run_key, limit)
+    if claimed is None:
+        print(json.dumps({"status": "DUPLICATE_RUN_IGNORED", "run_key": run_key}, indent=2))
+        return
+
+    auto_submit = bool(schedule.get("auto_submit", False))
+    results = []
+    run_status = "COMPLETED"
+    try:
+        print(json.dumps({
+            "run_id": claimed["id"],
+            "run_key": run_key,
+            "mode": "AUTO_SUBMIT" if auto_submit else "DRY_RUN_PREPARE_ONLY",
+            "limit": limit,
+        }, indent=2), flush=True)
+        with NaukriAgent(headless=False, slow_mo=args.slow_mo) as agent:
+            jobs = agent.scan_default(max_queries=args.scan_queries, per_query=args.per_query)
+            results = agent.auto_apply_from_queue(limit=limit, auto_submit=auto_submit)
+        submitted = sum(1 for item in results if item.get("outcome") == "SUBMITTED")
+        finish_agent_run(run_key, run_status, json.dumps({"scanned_added": len(jobs), "results": results}, ensure_ascii=False), submitted)
+        print(json.dumps({
+            "status": run_status,
+            "scanned_added": len(jobs),
+            "application_results": results,
+            "submitted_this_run": submitted,
+            "submitted_today": submitted_count_today(),
+            "next_run": "approximately 72 hours after this run completes",
+        }, indent=2, ensure_ascii=False))
+    except Exception as exc:
+        run_status = "FAILED"
+        finish_agent_run(run_key, run_status, json.dumps({"error": str(exc), "partial_results": results}, ensure_ascii=False), sum(1 for item in results if item.get("outcome") == "SUBMITTED"))
+        raise
+
+
 def cmd_naukri_autopilot(args):
     from .naukri import NaukriAgent
     with NaukriAgent(headless=False, slow_mo=args.slow_mo) as agent:
@@ -280,6 +383,14 @@ def main():
     x = ns.add_parser("job-detail"); x.add_argument("--job-id", type=int, required=True); x.add_argument("--slow-mo", type=int, default=150); x.set_defaults(func=cmd_naukri_job_detail)
 
     x = ns.add_parser("autopilot"); x.add_argument("--scan-queries", type=int, default=30); x.add_argument("--per-query", type=int, default=12); x.add_argument("--limit", type=int, default=10); x.add_argument("--auto-submit", action="store_true", help="Actually submit forms; omit for prepare-only mode."); x.add_argument("--slow-mo", type=int, default=150); x.set_defaults(func=cmd_naukri_autopilot)
+    x = ns.add_parser("schedule-status"); x.set_defaults(func=cmd_naukri_schedule_status)
+    x = ns.add_parser("scheduled-run")
+    x.add_argument("--scan-queries", type=int, default=30)
+    x.add_argument("--per-query", type=int, default=12)
+    x.add_argument("--limit", type=int, default=None)
+    x.add_argument("--force", action="store_true", help="Run immediately even when the 72-hour interval is not due.")
+    x.add_argument("--slow-mo", type=int, default=0)
+    x.set_defaults(func=cmd_naukri_scheduled_run)
 
     args = p.parse_args()
     args.func(args)

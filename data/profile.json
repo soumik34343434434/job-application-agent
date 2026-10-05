@@ -32,7 +32,13 @@
     "max_daily_applications": 10,
     "target_companies": "ANY",
     "minimum_ctc_lpa": 8,
-    "preferred_ctc_lpa_range": {"min": 8, "max": 16}
+    "preferred_ctc_lpa_range": {"min": 8, "max": 16},
+    "application_schedule": {
+      "enabled": true,
+      "applications_per_run": 5,
+      "interval_hours": 72,
+      "auto_submit": false
+    }
   },
   "verified_answers": {
     "years_of_experience": "2+ years",

@@ -75,7 +75,7 @@ python -m src.cli naukri scan --max-queries 6 --per-query 12
 
 ## Apply from the review queue
 
-Prepare only:
+Prepare only (never clicks Naukri's Apply button):
 
 ```bash
 python -m src.cli naukri apply --limit 10
@@ -86,6 +86,19 @@ Actually submit eligible Naukri-hosted applications:
 ```bash
 python -m src.cli naukri apply --limit 10 --auto-submit
 ```
+
+## Scheduled 5-application cycle
+
+The profile now supports a 72-hour cadence with a five-application run limit:
+
+```bash
+python -m src.cli naukri schedule-status
+python -m src.cli naukri scheduled-run
+```
+
+The scheduler persists run state in the `agent_runs` table, so a duplicated scheduler launch cannot start the same run twice. The current profile keeps `auto_submit` disabled until the live application state machine is explicitly enabled.
+
+For an always-on Linux VM, use the files under `deploy/systemd/` with a persistent dedicated Chrome profile and Xvfb display. The Mac is not required once the VM has its own browser session and credentials.
 
 The agent never invents work-authorization/sponsorship answers. Those questions stop the workflow for human input. It also stops on CAPTCHA/security challenges instead of attempting to bypass them.
 

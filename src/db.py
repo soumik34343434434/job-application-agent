@@ -64,6 +64,19 @@ def init_db():
             c.execute("ALTER TABLE jobs ADD COLUMN salary TEXT")
         c.execute("CREATE INDEX IF NOT EXISTS idx_jobs_fingerprint ON jobs(fingerprint)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)")
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS agent_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_key TEXT NOT NULL UNIQUE,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            status TEXT NOT NULL DEFAULT 'RUNNING',
+            requested_limit INTEGER NOT NULL,
+            submitted INTEGER NOT NULL DEFAULT 0,
+            results_json TEXT
+        )
+        """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_agent_runs_started ON agent_runs(started_at)")
 
 
 def add_job(company, title, url, description, score, recommendation, fingerprint=None, salary=""):
@@ -203,3 +216,38 @@ def review_queue():
             WHERE j.status IN ('READY_FOR_REVIEW','APPROVED')
             ORDER BY j.score DESC, j.id DESC
         """).fetchall()
+
+
+def start_agent_run(run_key, requested_limit):
+    """Claim one scheduled run; returns its row or None if already claimed."""
+    now = datetime.now(timezone.utc).isoformat()
+    with connect() as c:
+        try:
+            cur = c.execute(
+                "INSERT INTO agent_runs(run_key,started_at,status,requested_limit) VALUES(?,?,?,?)",
+                (run_key, now, "RUNNING", int(requested_limit)),
+            )
+        except sqlite3.IntegrityError:
+            return None
+        return c.execute("SELECT * FROM agent_runs WHERE id=?", (cur.lastrowid,)).fetchone()
+
+
+def finish_agent_run(run_key, status, results, submitted=0):
+    now = datetime.now(timezone.utc).isoformat()
+    with connect() as c:
+        c.execute(
+            "UPDATE agent_runs SET finished_at=?, status=?, submitted=?, results_json=? WHERE run_key=?",
+            (now, status, int(submitted), results, run_key),
+        )
+
+
+def latest_agent_run():
+    with connect() as c:
+        return c.execute("SELECT * FROM agent_runs ORDER BY id DESC LIMIT 1").fetchone()
+
+
+def last_completed_agent_run():
+    with connect() as c:
+        return c.execute(
+            "SELECT * FROM agent_runs WHERE status='COMPLETED' ORDER BY id DESC LIMIT 1"
+        ).fetchone()

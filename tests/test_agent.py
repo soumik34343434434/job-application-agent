@@ -28,3 +28,25 @@ def test_fingerprint_stable_for_same_job():
     a = fingerprint_job('Acme', 'Security Engineer', 'https://example.com/job/1?utm=abc')
     b = fingerprint_job('Acme', 'Security Engineer', 'https://example.com/job/1?utm=def')
     assert a == b
+
+
+def test_scheduled_run_due_logic(monkeypatch):
+    from datetime import datetime, timezone, timedelta
+    from src import cli
+
+    profile = {"targeting": {"application_schedule": {"interval_hours": 72}}}
+    monkeypatch.setattr(cli, "last_completed_agent_run", lambda: None)
+    due, next_due, interval = cli._scheduled_run_due(profile)
+    assert due is True and next_due is None and interval == 72.0
+
+    finished = datetime.now(timezone.utc) - timedelta(hours=24)
+    monkeypatch.setattr(cli, "last_completed_agent_run", lambda: {"finished_at": finished.isoformat()})
+    due, next_due, interval = cli._scheduled_run_due(profile)
+    assert due is False
+    assert next_due > datetime.now(timezone.utc)
+
+    finished = datetime.now(timezone.utc) - timedelta(hours=73)
+    monkeypatch.setattr(cli, "last_completed_agent_run", lambda: {"finished_at": finished.isoformat()})
+    due, next_due, interval = cli._scheduled_run_due(profile)
+    assert due is True
+    assert next_due <= datetime.now(timezone.utc)

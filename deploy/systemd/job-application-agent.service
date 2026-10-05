@@ -1,0 +1,15 @@
+[Unit]
+Description=Job Application Agent scheduled Naukri cycle
+After=network-online.target job-application-agent-browser.service
+Wants=network-online.target
+Requires=job-application-agent-browser.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/job_application_agent
+Environment=DISPLAY=:99
+Environment=NAUKRI_CDP_PORT=9229
+Environment=BROWSER_EXECUTABLE_PATH=/usr/bin/google-chrome
+ExecStart=%h/job_application_agent/scripts/run_scheduled.sh
+StandardOutput=append:%h/job_application_agent/logs/scheduled-run.log
+StandardError=append:%h/job_application_agent/logs/scheduled-run.log

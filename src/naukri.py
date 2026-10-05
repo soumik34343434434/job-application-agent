@@ -2328,9 +2328,13 @@ class NaukriAgent:
                 ]
                 for loc in locators:
                     try:
-                        if loc.count():
-                            loc.first.scroll_into_view_if_needed()
-                            loc.first.click()
+                        count = loc.count()
+                        for index in range(count):
+                            candidate = loc.nth(index)
+                            if not candidate.is_visible() or not candidate.is_enabled():
+                                continue
+                            candidate.scroll_into_view_if_needed()
+                            candidate.click(timeout=5000)
                             self.page.wait_for_timeout(1500)
                             if self.context:
                                 current_pages = self.context.pages
@@ -2510,6 +2514,8 @@ class NaukriAgent:
             "application submitted",
             "you have applied",
             "application has been sent",
+            "applied to \"",
+            "applied to '",
         )
         return any(marker in body for marker in success_markers)
 
@@ -2546,10 +2552,26 @@ class NaukriAgent:
             set_status(job["id"], "ALREADY_APPLIED", "Naukri indicates this application was already submitted.", daily_cap)
             return "ALREADY_APPLIED"
 
+        # On the current Naukri flow, the visible Apply button can itself
+        # submit a one-click application and redirect to /myapply/saveApply.
+        # Therefore prepare-only mode must NEVER click it.
+        if not auto_submit:
+            external_apply = self.page.get_by_text(
+                re.compile(r"apply\s+(?:on|at)\s+(?:the\s+)?(?:company|employer)\s+site", re.I)
+            )
+            if external_apply.count() and any(external_apply.nth(i).is_visible() for i in range(min(5, external_apply.count()))):
+                log_event(job["id"], "EXTERNAL_APPLICATION", "Naukri exposes an employer-hosted application flow.")
+                set_status(
+                    job["id"],
+                    "EXTERNAL",
+                    "External application site detected; automatic submission disabled.",
+                    daily_cap,
+                )
+                return "EXTERNAL_APPLICATION"
+            set_status(job["id"], "APPROVED", "Application target verified; Apply click intentionally not performed in prepare-only mode.", daily_cap)
+            return "READY_TO_APPLY"
+
         if not self._safe_click_apply():
-            # Some listings expose only an employer-hosted application control
-            # such as "Apply on company site". Treat that as an external
-            # application instead of a broken Naukri Apply selector.
             external_apply = self.page.get_by_text(
                 re.compile(r"apply\s+(?:on|at)\s+(?:the\s+)?(?:company|employer)\s+site", re.I)
             )
@@ -2564,11 +2586,18 @@ class NaukriAgent:
                 return "EXTERNAL_APPLICATION"
             return "APPLY_BUTTON_NOT_FOUND"
 
-        self.page.wait_for_timeout(1200)
+        self.page.wait_for_timeout(1500)
         self._verification_guard(
             "Naukri presented CAPTCHA/security verification during apply",
-            interactive=not auto_submit,
+            interactive=False,
         )
+
+        # One-click Naukri applications land on the Apply Confirmation page.
+        # Treat that confirmation as the authoritative submission result and do
+        # not attempt a second submit.
+        if self._application_success_detected():
+            set_status(job["id"], "SUBMITTED", "Naukri Apply click reached an application confirmation page.", daily_cap)
+            return "SUBMITTED"
 
         if self._already_applied_detected():
             set_status(job["id"], "ALREADY_APPLIED", "Naukri indicates this application was already submitted.", daily_cap)
