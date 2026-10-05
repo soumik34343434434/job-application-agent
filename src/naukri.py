@@ -45,32 +45,43 @@ AGENT_CDP_HOST = "127.0.0.1"
 AGENT_CDP_PORT = int(os.getenv("NAUKRI_CDP_PORT", "9229"))
 AGENT_CDP_ENDPOINT = f"http://{AGENT_CDP_HOST}:{AGENT_CDP_PORT}"
 
-# Search families are deliberately role-led, with tool-specific variants derived
-# from the verified resume. Tool searches improve recall for jobs whose titles are
-# generic but whose JDs mention the candidate's actual platforms.
+# Naukri should receive one broad keyword search instead of a series of
+# narrow title searches. Commas are intentional: the UI accepts the full role
+# family as one keyword string so the result pool is analyzed together.
 DEFAULT_QUERIES = [
-    "Cybersecurity Engineer",
-    "Security Engineer",
-    "Security Operations Engineer",
-    "Endpoint Security Engineer",
+    "Vulnerability Management",
+    "Vulnerability Management Analyst",
+    "Vulnerability Analyst",
+    "Vulnerability Management Specialist",
     "Vulnerability Management Engineer",
-    "Cloud Security Engineer",
-    "Identity Security Engineer",
+    "Vulnerability Engineer",
+    "Vulnerability Assessment Analyst",
+    "Vulnerability Remediation Analyst",
+    "Security Vulnerability Analyst",
+    "Qualys Vulnerability Management",
+    "IAM Engineer",
+    "IAM Analyst",
+    "Identity & Access Management Analyst",
+    "Identity Engineer",
+    "IAM Security Analyst",
+    "Okta Engineer",
+    "Okta Administrator",
+    "Identity Security Analyst",
+    "Access Management Analyst",
+    "Identity & Access Management",
+    "Cyber Security Engineer",
+    "Cybersecurity Analyst",
     "Security Analyst",
-    "Endpoint Security Microsoft Defender",
-    "Security Operations Microsoft Defender",
-    "Security Operations Carbon Black",
-    "Endpoint Security ThreatLocker",
-    "Vulnerability Management Qualys",
-    "IAM Security Okta",
-    "Identity Security Okta",
-    "Cloud Security Netskope",
-    "Cloud Security Cloudflare",
-    "Email Security Mimecast",
-    "Security Engineer EDR",
-    "Incident Response Security Analyst",
+    "Security Operations Analyst",
+    "Security Operations Engineer",
+    "Endpoint Security Analyst",
+    "Endpoint Security Engineer",
+    "Security Engineer",
+    "Incident Response Analyst",
+    "SOC Analyst L2 L3",
 ]
 
+# Naukri should receive all preferred locations in the same search field too.
 PREFERRED_LOCATIONS = [
     "Remote", "Kolkata", "Bangalore", "Bengaluru", "Hyderabad", "Secunderabad",
     "Pune", "Mumbai", "Noida", "Gurgaon", "Gurugram", "Delhi NCR", "Ahmedabad",
@@ -317,7 +328,7 @@ class NaukriAgent:
             return False
 
 
-    def open_home(self):
+    def open_home(self, interactive: bool = True):
         try:
             self.page.goto(NAUKRI_HOME, wait_until="domcontentloaded", timeout=15000)
         except Exception as exc:
@@ -328,7 +339,10 @@ class NaukriAgent:
                 raise
         self.page.wait_for_timeout(1500)
         if self.needs_human_verification():
-            self.wait_for_human("Naukri presented a CAPTCHA/security verification")
+            self._human_blocker(
+                "Naukri presented a CAPTCHA/security verification",
+                interactive=interactive,
+            )
 
     def _click_login(self):
         candidates = [
@@ -367,8 +381,8 @@ class NaukriAgent:
                 continue
         return False
 
-    def ensure_logged_in(self):
-        self.open_home()
+    def ensure_logged_in(self, interactive: bool = True):
+        self.open_home(interactive=interactive)
         if self.is_logged_in():
             return
 
@@ -812,16 +826,19 @@ class NaukriAgent:
         except Exception:
             return False
 
-        # Choose the current location suggestion, if presented.
-        try:
-            suggestions = self.page.get_by_text(re.compile(rf"^{re.escape(location)}$", re.I))
-            for i in range(suggestions.count()):
-                candidate = suggestions.nth(i)
-                if candidate.is_visible() and candidate.is_enabled():
-                    candidate.click()
-                    break
-        except Exception:
-            pass
+        # For a comma-separated multi-location search, keep the full value in
+        # the location field. Selecting the first suggestion would collapse the
+        # search back to one city and defeat the combined-location strategy.
+        if "," not in location:
+            try:
+                suggestions = self.page.get_by_text(re.compile(rf"^{re.escape(location)}$", re.I))
+                for i in range(suggestions.count()):
+                    candidate = suggestions.nth(i)
+                    if candidate.is_visible() and candidate.is_enabled():
+                        candidate.click()
+                        break
+            except Exception:
+                pass
 
         # The inspected UI exposes a visible Search button. Prefer the DOM
         # click because the header can still be transitioning between states.
@@ -890,7 +907,7 @@ class NaukriAgent:
         location: str = "",
         interactive: bool = True,
     ) -> list[FoundJob]:
-        self.ensure_logged_in()
+        self.ensure_logged_in(interactive=interactive)
         try:
             self.page.goto(NAUKRI_HOME, wait_until="domcontentloaded", timeout=15000)
         except Exception as exc:
@@ -1449,34 +1466,28 @@ class NaukriAgent:
         return added
 
     def scan_default(self, max_queries: int = 6, per_query: int = 12) -> list[FoundJob]:
-        all_found: list[FoundJob] = []
-        seen = set()
-        locations = PREFERRED_LOCATIONS[:4]
-        target_count = max(1, max_queries * per_query)
-        for query in DEFAULT_QUERIES[:max_queries]:
-            for location in locations:
-                print(f"[scan] query={query!r} location={location!r}", flush=True)
-                try:
-                    found_jobs = self.search(query, location, interactive=False)
-                except HumanActionRequired:
-                    # Unattended discovery must not stall on a verification gate
-                    # for one query/location. Skip that slice and keep scanning;
-                    # direct application execution still stops safely for human action.
-                    print(f"[scan] skipped verification-gated slice: {query!r} / {location!r}", flush=True)
-                    continue
-                selected = 0
-                for job in found_jobs[:per_query]:
-                    if job.url not in seen:
-                        seen.add(job.url)
-                        all_found.append(job)
-                        selected += 1
-                print(f"[scan] selected={selected} total_candidates={len(all_found)}/{target_count}", flush=True)
-                if len(all_found) >= target_count:
-                    break
-            if len(all_found) >= max_queries * per_query:
-                break
-        print(f"[scan] ingesting {len(all_found)} bounded candidates", flush=True)
-        return self.ingest(all_found)
+        """Run one broad search across the complete role/location target set."""
+        del max_queries  # retained only for CLI backward compatibility
+        del per_query   # retained only for CLI backward compatibility
+
+        combined_query = ", ".join(DEFAULT_QUERIES)
+        combined_location = ", ".join(PREFERRED_LOCATIONS)
+        print(f"[scan] combined_query_terms={len(DEFAULT_QUERIES)}", flush=True)
+        print(f"[scan] query={combined_query!r}", flush=True)
+        print(f"[scan] locations={combined_location!r}", flush=True)
+
+        try:
+            found_jobs = self.search(combined_query, combined_location, interactive=False)
+        except HumanActionRequired:
+            print("[scan] skipped verification-gated combined search", flush=True)
+            return []
+
+        # Naukri currently exposes one result page to the extractor. Analyze every
+        # result card returned by that single broad search; do not discard cards by
+        # city or by which individual role phrase matched first.
+        print(f"[scan] discovered={len(found_jobs)} result cards", flush=True)
+        print(f"[scan] ingesting={len(found_jobs)} candidates", flush=True)
+        return self.ingest(found_jobs)
 
     def _all_contexts(self):
         """Return the top page plus any live iframes used by Naukri's apply UI."""

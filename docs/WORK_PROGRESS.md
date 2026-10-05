@@ -7,7 +7,7 @@ This file is the visible audit trail for the Naukri agent build.
 
 **Current status:** live local browser work is active on the authenticated dedicated Chrome profile. The latest local fixes are pushed to `main`.
 
-**Working on now:** bounded live discovery + safe application routing.
+**Working on now:** one combined Naukri search across the full Tier 1/Tier 2 role list and all preferred locations, followed by safe application routing.
 
 ## What has been completed
 - Persistent dedicated Naukri Chrome over CDP.
@@ -22,7 +22,10 @@ This file is the visible audit trail for the Naukri agent build.
 - Experience selection hardened around the live `2 years` option.
 - External employer-hosted applications are classified as `EXTERNAL_APPLICATION` instead of selector failures.
 - Unattended discovery no longer blocks on a human-verification challenge for one query/listing.
-- Discovery is now bounded by `per_query` before expensive full-JD ingestion.
+- Default discovery now sends all 30 requested Tier 1/Tier 2 role terms as one comma-separated keyword search.
+- Default discovery now sends all 13 preferred locations as one comma-separated location search instead of looping city-by-city.
+- Multi-location search preserves the full location string instead of selecting the first suggestion.
+- Non-interactive search now routes homepage verification challenges through the same safe human-blocker path instead of waiting for terminal input.
 - Live search has a bounded retry for the authenticated header/navigation race.
 
 ## Validation status
