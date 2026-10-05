@@ -312,7 +312,7 @@ def cmd_naukri_scheduled_run(args):
             "mode": "AUTO_SUBMIT" if auto_submit else "DRY_RUN_PREPARE_ONLY",
             "limit": limit,
         }, indent=2), flush=True)
-        with NaukriAgent(headless=False, slow_mo=args.slow_mo) as agent:
+        with NaukriAgent(headless=bool(os.getenv("GITHUB_ACTIONS")) or bool(os.getenv("NAUKRI_STORAGE_STATE_PATH")), slow_mo=args.slow_mo) as agent:
             jobs = agent.scan_default(max_queries=args.scan_queries, per_query=args.per_query)
             results = agent.auto_apply_from_queue(limit=limit, auto_submit=auto_submit)
         submitted = sum(1 for item in results if item.get("outcome") == "SUBMITTED")
