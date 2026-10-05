@@ -516,6 +516,9 @@ class NaukriAgent:
         )
 
         username_selectors = [
+            '#usernameField',
+            '#emailTxt',
+            'input[name="USERNAME"]',
             'input[autocomplete="username"]',
             'input[name*="user" i]',
             'input[placeholder*="email" i]',
@@ -524,24 +527,51 @@ class NaukriAgent:
             'input[type="text"]',
         ]
         password_selectors = [
+            '#passwordField',
+            '#pwd1',
+            'input[name="PASSWORD"]',
             'input[autocomplete="current-password"]',
             'input[name*="pass" i]',
             'input[placeholder*="password" i]',
             'input[type="password"]',
         ]
 
+        def page_contexts():
+            contexts = [self.page]
+            try:
+                contexts.extend(self.page.frames)
+            except Exception:
+                pass
+            return contexts
+
         def fill_first(selectors, value):
-            for selector in selectors:
-                try:
-                    loc = self.page.locator(selector)
-                    for index in range(min(loc.count(), 5)):
-                        candidate = loc.nth(index)
-                        if candidate.is_visible() and candidate.is_enabled():
-                            candidate.fill(value)
-                            return True
-                except Exception:
-                    continue
+            for context in page_contexts():
+                for selector in selectors:
+                    try:
+                        loc = context.locator(selector)
+                        for index in range(min(loc.count(), 5)):
+                            candidate = loc.nth(index)
+                            if candidate.is_visible() and candidate.is_enabled():
+                                candidate.fill(value)
+                                return True
+                    except Exception:
+                        continue
             return False
+
+        # Naukri has historically exposed two jobseeker login pages. If the
+        # primary page renders a shell/modal without credential inputs, fall back
+        # to the legacy login endpoint before declaring the login UI broken.
+        if not fill_first(username_selectors, username):
+            try:
+                if "login.naukri.com" not in (self.page.url or ""):
+                    self.page.goto(
+                        "https://login.naukri.com/nLogin/Login.php",
+                        wait_until="domcontentloaded",
+                        timeout=15000,
+                    )
+                    self.page.wait_for_timeout(1200)
+            except Exception:
+                pass
 
         if not fill_first(username_selectors, username):
             raise RuntimeError("Naukri login form did not expose an email/username field.")
