@@ -219,6 +219,28 @@ AUTOMOTIVE_EMBEDDED_TERMS = [
     "functional safety",
 ]
 
+DIRECT_PROFILE_TERMS = [
+    "microsoft defender", "carbon black", "threatlocker", "qualys",
+    "mimecast", "netskope", "cloudflare", "okta", "servicenow",
+    "jml", "sso", "mfa", "cmdb", "agent troubleshooting",
+]
+
+
+def _salary_range_lpa(salary: str) -> tuple[float, float] | None:
+    """Parse only an explicitly labeled/disclosed salary field."""
+    text = normalize(salary or "")
+    if not text or any(term in text for term in ("not disclosed", "confidential", "not specified")):
+        return None
+    if not re.search(r"\b(?:lpa|lac|lacs|lakh|lakhs|per annum|annual ctc|ctc)\b", text):
+        return None
+    nums = [float(x.replace(",", "")) for x in re.findall(r"\d+(?:\.\d+)?", text)]
+    if not nums:
+        return None
+    if len(nums) == 1:
+        return nums[0], nums[0]
+    return min(nums), max(nums)
+
+
 @dataclass
 class ScoreResult:
     score: int
@@ -315,7 +337,7 @@ def _experience_ceiling(blob: str) -> float | None:
     return None
 
 
-def score_job(title: str, description: str, company: str = "") -> ScoreResult:
+def score_job(title: str, description: str, company: str = "", salary: str = "") -> ScoreResult:
     title_n = normalize(title)
     blob = normalize(f"{title} {company} {description}")
 
@@ -345,14 +367,25 @@ def score_job(title: str, description: str, company: str = "") -> ScoreResult:
             verified_groups.append(group)
             matched.extend(hits[:4])
 
-    # Exact verified tools/domains carry the most weight.
+    # A verified skill family proves domain relevance, but broad generic security
+    # wording must not be worth the same as the candidate's exact tools.
     if verified_groups:
-        # Two or more verified skill families plus a target role should cross the
-        # review/submit boundary only when the evidence is substantial.
-        score += min(40, 15 * len(verified_groups))
+        group_points = 15 + (13 if len(verified_groups) >= 2 else 0) + (2 if len(verified_groups) >= 3 else 0)
+        group_points = min(30, group_points)
+        score += group_points
         reasons.append(
             f"JD matches {min(len(verified_groups), 5)} verified security skill areas from the resume."
         )
+
+    direct_hits = [term for term in DIRECT_PROFILE_TERMS if _term_in_blob(term, blob)]
+    direct_points = min(10, int(round(2.5 * len(direct_hits))))
+    if direct_points:
+        score += direct_points
+        reasons.append(f"JD contains {len(direct_hits)} exact/verified profile tools or credentials.")
+
+    if len(verified_groups) >= 3:
+        score += 5
+        reasons.append("JD spans multiple security domains relevant to the candidate's current breadth.")
 
     related_groups = []
     for group, terms in RELATED_DOMAIN_TERMS.items():
@@ -446,19 +479,17 @@ def score_job(title: str, description: str, company: str = "") -> ScoreResult:
 
     # Compensation fit is a secondary signal: the hard minimum CTC filter remains
     # in NaukriAgent, while this adds preference for the user's 8-16 LPA target band.
-    salary_blob = normalize(blob)
-    salary_numbers = [
-        float(x.replace(",", ""))
-        for x in re.findall(r"(?:₹\s*)?(\d+(?:\.\d+)?)", salary_blob)
-    ]
-    if salary_numbers and _has_any(salary_blob, ["lpa", "lac", "lakh"]):
-        low, high = min(salary_numbers), max(salary_numbers)
+    salary_range = _salary_range_lpa(salary)
+    if salary_range:
+        low, high = salary_range
         if low >= 8 and high <= 16:
             score += 6
             reasons.append("Stated compensation is inside the preferred 8-16 LPA target range.")
         elif high >= 8 and low < 8:
             score += 2
             reasons.append("Stated compensation overlaps the 8+ LPA target.")
+        elif low > 16:
+            reasons.append("Stated compensation is above the preferred 8-16 LPA range; no salary bonus applied.")
 
     # A title-only security match should never become a HIGH_PRIORITY job.
     if role_hits and not verified_groups and not related_groups:

@@ -1839,7 +1839,7 @@ class NaukriAgent:
             # Always calculate a live-JD score first, even when a hard targeting
             # rule later rejects the job. This keeps the database informative
             # instead of leaving rejected rows at the old score or at 0/NEW.
-            result = score_job(detail.title, detail.description, detail.company)
+            result = score_job(detail.title, detail.description, detail.company, detail.salary)
             detail.score = result.score
             detail.recommendation = result.recommendation
             detail.job_id = row["id"]
@@ -1857,6 +1857,7 @@ class NaukriAgent:
                 detail.description,
                 detail.score,
                 detail.recommendation,
+                detail.salary,
             )
 
             if target_ok and detail.score >= profile["targeting"]["minimum_match_score_for_review"]:
@@ -1990,7 +1991,7 @@ class NaukriAgent:
                 continue
 
             if not self._target_preference_ok(detail, profile):
-                result = score_job(detail.title, detail.description, detail.company)
+                result = score_job(detail.title, detail.description, detail.company, detail.salary)
                 detail.score = min(result.score, 69)
                 detail.recommendation = "SKIP"
                 # Keep the record for auditability, but never create application prep.
@@ -2005,6 +2006,7 @@ class NaukriAgent:
                         detail.score,
                         "SKIP",
                         fp,
+                        detail.salary,
                     )
                     added.append(detail)
                 continue
@@ -2014,7 +2016,7 @@ class NaukriAgent:
             if duplicate:
                 continue
 
-            result = score_job(detail.title, detail.description, detail.company)
+            result = score_job(detail.title, detail.description, detail.company, detail.salary)
             detail.score = result.score
             detail.recommendation = result.recommendation
             detail.job_id = add_job(
@@ -2025,6 +2027,7 @@ class NaukriAgent:
                 result.score,
                 result.recommendation,
                 fp,
+                detail.salary,
             )
 
             if result.score >= profile["targeting"]["minimum_match_score_for_review"]:

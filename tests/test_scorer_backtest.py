@@ -80,3 +80,11 @@ def test_role_searches_are_union_not_intersection():
     assert all(location == "" for _, location, _ in calls)
     assert len(result) == 3
     assert len(accepted) == 3
+
+
+def test_salary_is_scored_only_from_dedicated_field():
+    no_salary = score_job("Cybersecurity Analyst", "2-4 years experience; SIEM, EDR, incident response", "Example Co")
+    in_band = score_job("Cybersecurity Analyst", "2-4 years experience; SIEM, EDR, incident response", "Example Co", "₹8-12 LPA")
+    below_band_text_only = score_job("Cybersecurity Analyst", "2-4 years experience; SIEM, EDR, incident response; 6 LPA", "Example Co")
+    assert in_band.score == no_salary.score + 6
+    assert below_band_text_only.score == no_salary.score

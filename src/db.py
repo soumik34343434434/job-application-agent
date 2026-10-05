@@ -31,7 +31,8 @@ def init_db():
             recommendation TEXT,
             status TEXT NOT NULL DEFAULT 'FOUND',
             created_at TEXT NOT NULL,
-            fingerprint TEXT
+            fingerprint TEXT,
+            salary TEXT
         )
         """)
         c.execute("""
@@ -59,15 +60,18 @@ def init_db():
         cols = {r[1] for r in c.execute("PRAGMA table_info(jobs)").fetchall()}
         if "fingerprint" not in cols:
             c.execute("ALTER TABLE jobs ADD COLUMN fingerprint TEXT")
+        if "salary" not in cols:
+            c.execute("ALTER TABLE jobs ADD COLUMN salary TEXT")
         c.execute("CREATE INDEX IF NOT EXISTS idx_jobs_fingerprint ON jobs(fingerprint)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)")
 
 
-def add_job(company, title, url, description, score, recommendation, fingerprint=None):
+def add_job(company, title, url, description, score, recommendation, fingerprint=None, salary=""):
+
     with connect() as c:
         cur = c.execute(
-            "INSERT INTO jobs(company,title,url,description,score,recommendation,status,created_at,fingerprint) VALUES(?,?,?,?,?,?,?,?,?)",
-            (company, title, url, description, score, recommendation, "FOUND", datetime.now(timezone.utc).isoformat(), fingerprint)
+            "INSERT INTO jobs(company,title,url,description,score,recommendation,status,created_at,fingerprint,salary) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (company, title, url, description, score, recommendation, "FOUND", datetime.now(timezone.utc).isoformat(), fingerprint, salary or "")
         )
         return cur.lastrowid
 
@@ -123,16 +127,16 @@ def get_job(job_id):
         return c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
 
 
-def update_job_details(job_id, company, title, url, description, score, recommendation):
+def update_job_details(job_id, company, title, url, description, score, recommendation, salary=""):
     """Refresh a queued job with authoritative details from its job page."""
     with connect() as c:
         c.execute(
             """
             UPDATE jobs
-            SET company=?, title=?, url=?, description=?, score=?, recommendation=?
+            SET company=?, title=?, url=?, description=?, score=?, recommendation=?, salary=?
             WHERE id=?
             """,
-            (company, title, url, description, score, recommendation, job_id),
+            (company, title, url, description, score, recommendation, salary or "", job_id),
         )
 
 
