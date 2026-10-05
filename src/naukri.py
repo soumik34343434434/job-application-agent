@@ -2356,7 +2356,10 @@ class NaukriAgent:
         fallback = (
             'button[id*="apply" i], a[id*="apply" i], '
             'button[class*="apply" i], a[class*="apply" i], '
-            '[data-test*="apply" i], [data-qa*="apply" i]'
+            '[role="button"][id*="apply" i], [role="button"][class*="apply" i], '
+            '[data-test*="apply" i], [data-qa*="apply" i], '
+            '[data-testid*="apply" i], [class*="apply-button" i], '
+            '[class*="applyButton" i]'
         )
         for context in self._all_contexts():
             try:
