@@ -246,6 +246,7 @@ class NaukriAgent:
         self._last_role_recognized = None
         self._autocomplete_available = None
         self._session_ready = False
+        self._last_scan_error = None
 
     def __enter__(self):
         ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
@@ -2112,6 +2113,7 @@ class NaukriAgent:
         try:
             self.ensure_logged_in(interactive=False)
         except RuntimeError as exc:
+            self._last_scan_error = f"AUTH_ERROR: {exc}"
             print(f"[scan] AUTH_ERROR: {exc}", flush=True)
             return []
         print("[scan] AUTHENTICATED_SESSION=READY", flush=True)
@@ -2174,6 +2176,7 @@ class NaukriAgent:
                 print("[scan] SKIP_VERIFICATION: autocomplete discovery", flush=True)
                 return []
             except RuntimeError as exc:
+                self._last_scan_error = f"SEARCH_ERROR: {exc}"
                 print(f"[scan] SEARCH_ERROR: {exc}", flush=True)
                 return []
 
