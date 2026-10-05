@@ -503,12 +503,42 @@ class NaukriAgent:
         if not username or not password:
             return False
 
-        self.page.goto(
-            "https://www.naukri.com/nlogin/login",
-            wait_until="domcontentloaded",
-            timeout=15000,
-        )
-        self.page.wait_for_timeout(1200)
+        # Prefer the normal homepage -> Login flow. Direct navigation to
+        # /nlogin/login has intermittently produced browser-only HTTP/2 errors on
+        # GitHub-hosted runners even though the same URL returns 200 over urllib.
+        login_opened = False
+        try:
+            self.open_home(interactive=interactive)
+            login_opened = self._click_login()
+            self.page.wait_for_timeout(1200)
+        except Exception:
+            login_opened = False
+
+        # Fall back to the direct endpoint only when the homepage does not expose
+        # a usable Login control. Keep a legacy endpoint as a second fallback.
+        if not login_opened:
+            direct_urls = [
+                "https://www.naukri.com/nlogin/login",
+                "https://login.naukri.com/nLogin/Login.php",
+            ]
+            last_nav_error = None
+            for login_url in direct_urls:
+                try:
+                    self.page.goto(
+                        login_url,
+                        wait_until="domcontentloaded",
+                        timeout=15000,
+                    )
+                    self.page.wait_for_timeout(1200)
+                    last_nav_error = None
+                    break
+                except Exception as exc:
+                    last_nav_error = exc
+                    continue
+            if last_nav_error is not None:
+                raise RuntimeError(
+                    f"Could not open Naukri login page in the browser: {last_nav_error}"
+                )
 
         self._verification_guard(
             "Naukri presented CAPTCHA/security verification during login",
