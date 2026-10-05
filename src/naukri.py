@@ -2674,21 +2674,51 @@ class NaukriAgent:
             set_status(job["id"], "APPROVED", "Application target verified; Apply click intentionally not performed in prepare-only mode.", daily_cap)
             return "READY_TO_APPLY"
 
-        if not self._safe_click_apply():
-            external_apply = self.page.get_by_text(
-                re.compile(r"apply\s+(?:on|at)\s+(?:the\s+)?(?:company|employer)\s+site", re.I)
+        surface = self._apply_surface_state()
+        if surface == "CAPTCHA":
+            artifact = self._artifact("apply_security_gate")
+            set_status(
+                job["id"],
+                "NEEDS_USER",
+                f"Naukri presented a security verification on the Apply surface. Screenshot: {artifact}",
+                daily_cap,
             )
-            if external_apply.count():
-                log_event(job["id"], "EXTERNAL_APPLICATION", "Naukri exposes an employer-hosted application flow.")
-                set_status(
-                    job["id"],
-                    "EXTERNAL",
-                    "External application site detected; automatic submission disabled.",
-                    daily_cap,
-                )
-                return "EXTERNAL_APPLICATION"
-            return "APPLY_BUTTON_NOT_FOUND"
+            return "NEEDS_USER"
+        if surface == "ALREADY_APPLIED":
+            set_status(job["id"], "ALREADY_APPLIED", "Naukri indicates this application was already submitted.", daily_cap)
+            return "ALREADY_APPLIED"
+        if surface == "EXTERNAL":
+            log_event(job["id"], "EXTERNAL_APPLICATION", "Naukri exposes an employer-hosted application flow.")
+            set_status(
+                job["id"],
+                "EXTERNAL",
+                "External application site detected; automatic submission disabled.",
+                daily_cap,
+            )
+            return "EXTERNAL_APPLICATION"
+        if surface != "INTERNAL":
+            diagnostics = self._apply_surface_diagnostics()
+            log_event(job["id"], "APPLY_SURFACE_UNKNOWN", json.dumps(diagnostics, ensure_ascii=False))
+            artifact = self._artifact("apply_surface_unknown")
+            set_status(
+                job["id"],
+                "NEEDS_USER",
+                f"Could not positively identify the internal Naukri Apply control. Screenshot: {artifact}",
+                daily_cap,
+            )
+            return "APPLY_SURFACE_UNKNOWN"
 
+        if not self._safe_click_apply():
+            diagnostics = self._apply_surface_diagnostics()
+            log_event(job["id"], "APPLY_CLICK_FAILED", json.dumps(diagnostics, ensure_ascii=False))
+            artifact = self._artifact("apply_click_failed")
+            set_status(
+                job["id"],
+                "NEEDS_USER",
+                f"Internal Apply control was identified but could not be clicked. Screenshot: {artifact}",
+                daily_cap,
+            )
+            return "APPLY_CLICK_FAILED"
         self.page.wait_for_timeout(1500)
         self._verification_guard(
             "Naukri presented CAPTCHA/security verification during apply",
