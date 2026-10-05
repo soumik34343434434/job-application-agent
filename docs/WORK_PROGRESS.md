@@ -7,7 +7,7 @@ This file is the visible audit trail for the Naukri agent build.
 
 **Current status:** live local browser work is active on the authenticated dedicated Chrome profile. The latest local fixes are pushed to `main`.
 
-**Working on now:** one combined Naukri search across the full Tier 1/Tier 2 role list and all preferred locations, followed by safe application routing.
+**Working on now:** designation-aware Naukri discovery: check each Tier 1/Tier 2 role against live autocomplete, use Naukri's canonical designation when a harmless naming variant exists, search all preferred locations together, then route candidates through safe application gates.
 
 ## What has been completed
 - Persistent dedicated Naukri Chrome over CDP.
@@ -22,10 +22,14 @@ This file is the visible audit trail for the Naukri agent build.
 - Experience selection hardened around the live `2 years` option.
 - External employer-hosted applications are classified as `EXTERNAL_APPLICATION` instead of selector failures.
 - Unattended discovery no longer blocks on a human-verification challenge for one query/listing.
-- Default discovery now sends all 30 requested Tier 1/Tier 2 role terms as one comma-separated keyword search.
-- Default discovery now sends all 13 preferred locations as one comma-separated location search instead of looping city-by-city.
+- Default discovery checks each of the 30 requested Tier 1/Tier 2 role phrases against Naukri's live autocomplete before searching.
+- Harmless designation variants are normalized (for example `Cybersecurity Analyst` -> Naukri `Cyber Security Analyst`; `Identity & Access Management` -> `Identity access management`).
+- Unsupported related suggestions are not treated as matches (for example `IAM Engineer` is not accepted from `IAM Support Engineer`).
+- The `SOC Analyst L2 L3` group resolves to Naukri's recognized `SOC Analyst 2` variant; generic `SOC Analyst` is not added.
+- Default discovery sends all 13 preferred locations together instead of looping city-by-city.
 - Multi-location search preserves the full location string instead of selecting the first suggestion.
-- Non-interactive search now routes homepage verification challenges through the same safe human-blocker path instead of waiting for terminal input.
+- Naukri autocomplete refreshes are given a bounded second wait to avoid stale suggestions being mistaken for the next role.
+- Non-interactive search routes homepage verification challenges through the safe human-blocker path instead of waiting for terminal input.
 - Live search has a bounded retry for the authenticated header/navigation race.
 
 ## Validation status

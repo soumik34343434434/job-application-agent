@@ -45,9 +45,8 @@ AGENT_CDP_HOST = "127.0.0.1"
 AGENT_CDP_PORT = int(os.getenv("NAUKRI_CDP_PORT", "9229"))
 AGENT_CDP_ENDPOINT = f"http://{AGENT_CDP_HOST}:{AGENT_CDP_PORT}"
 
-# Naukri should receive one broad keyword search instead of a series of
-# narrow title searches. Commas are intentional: the UI accepts the full role
-# family as one keyword string so the result pool is analyzed together.
+# Naukri role discovery is designation-led: each configured role is checked
+# individually against autocomplete before its result page is searched.
 DEFAULT_QUERIES = [
     "Vulnerability Management",
     "Vulnerability Management Analyst",
@@ -81,6 +80,13 @@ DEFAULT_QUERIES = [
     "SOC Analyst L2 L3",
 ]
 
+# Human-friendly group names can map to Naukri's actual designation labels.
+# For SOC, only the numbered L2 designation is currently recognized by Naukri's
+# autocomplete; the generic SOC Analyst role is intentionally not included.
+ROLE_VARIANTS = {
+    "SOC Analyst L2 L3": ["SOC Analyst 2", "SOC Analyst 3"],
+}
+
 # Naukri should receive all preferred locations in the same search field too.
 PREFERRED_LOCATIONS = [
     "Remote", "Kolkata", "Bangalore", "Bengaluru", "Hyderabad", "Secunderabad",
@@ -103,6 +109,10 @@ LOGIN_WORDS = ("login", "sign in", "log in")
 
 class HumanActionRequired(RuntimeError):
     """A browser state requires a human action the agent will not bypass."""
+
+
+class RoleNotRecognized(RuntimeError):
+    """Naukri autocomplete does not contain the requested exact role phrase."""
 
 
 def _cdp_is_available() -> bool:
@@ -201,6 +211,7 @@ class NaukriAgent:
         self.page = None
         self.browser_user_data_dir = None
         self.browser_profile_dir = None
+        self._last_role_recognized = None
 
     def __enter__(self):
         ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
@@ -669,6 +680,100 @@ class NaukriAgent:
                 continue
         return None
 
+    @staticmethod
+    def _normalize_role_phrase(value: str) -> str:
+        """Normalize harmless designation spelling/punctuation variants."""
+        text = (value or "").casefold().replace("&", " and ")
+        text = re.sub(r"\bcybersecurity\b", "cyber security", text)
+        text = re.sub(r"\band\b", " ", text)
+        return re.sub(r"[^a-z0-9]+", " ", text).strip()
+
+    def _keyword_autocomplete_options(self, query: str) -> list[str]:
+        """Read Naukri's live keyword/designation autocomplete options."""
+        try:
+            options = self.page.locator(
+                'div.nI-gNb-sugg .tuple-wrap .opt[title]'
+            )
+            values = []
+            target = re.sub(r"\s+", " ", query).strip().casefold()
+            for i in range(min(options.count(), 30)):
+                item = options.nth(i)
+                if not item.is_visible():
+                    continue
+                value = self._clean_text(item.get_attribute("title") or item.inner_text())
+                if value:
+                    values.append(value)
+            return values
+        except Exception:
+            return []
+
+    def _select_exact_keyword_suggestion(self, query: str) -> bool:
+        """Require Naukri to recognize the exact role phrase before searching."""
+        target = re.sub(r"\s+", " ", query).strip().casefold()
+        if not target:
+            return False
+
+        target = self._normalize_role_phrase(query)
+        for attempt in range(2):
+            try:
+                if attempt:
+                    self.page.wait_for_timeout(900)
+                options = self.page.locator(
+                    'div.nI-gNb-sugg .tuple-wrap .opt[title]'
+                )
+                for i in range(min(options.count(), 30)):
+                    item = options.nth(i)
+                    if not item.is_visible() or not item.is_enabled():
+                        continue
+                    title = self._clean_text(item.get_attribute("title") or item.inner_text())
+                    normalized = self._normalize_role_phrase(title)
+                    if normalized == target:
+                        item.click()
+                        self.page.wait_for_timeout(250)
+                        return True
+            except Exception:
+                continue
+        return False
+
+    def role_is_recognized(self, query: str) -> tuple[bool, list[str]]:
+        """Check whether the exact role exists in Naukri autocomplete."""
+        try:
+            keyword = self.page.locator(
+                'input[placeholder="Enter keyword / designation / companies"]'
+            )
+            keyword = next(
+                (
+                    keyword.nth(i)
+                    for i in range(keyword.count())
+                    if keyword.nth(i).is_visible() and keyword.nth(i).is_enabled()
+                ),
+                None,
+            )
+            if keyword is None:
+                return False, []
+            keyword.fill(query)
+            self.page.wait_for_timeout(1000)
+            options = self._keyword_autocomplete_options(query)
+            target = self._normalize_role_phrase(query)
+            recognized = any(
+                self._normalize_role_phrase(option) == target
+                for option in options
+            )
+
+            # Naukri's suggestion API can lag behind the keystroke. If the
+            # current dropdown still appears unrelated, give it one bounded
+            # refresh window before declaring the role absent.
+            if not recognized:
+                self.page.wait_for_timeout(1000)
+                options = self._keyword_autocomplete_options(query)
+                recognized = any(
+                    self._normalize_role_phrase(option) == target
+                    for option in options
+                )
+            return recognized, options
+        except Exception:
+            return False, []
+
     def _fill_search_form(self, query: str, location: str) -> bool:
         # is_logged_in() intentionally checks the authenticated profile route.
         # Always return to the Naukri homepage before interacting with the header
@@ -727,11 +832,23 @@ class NaukriAgent:
             location_field = None
 
         if not keyword or not location_field:
+            self._last_role_recognized = None
             return False
 
+        self._last_role_recognized = None
         try:
             keyword.fill(query)
-            self.page.wait_for_timeout(400)
+            self.page.wait_for_timeout(700)
+
+            # Naukri autocomplete is the source of truth for whether a requested
+            # role phrase exists. Select the exact suggestion; never search a
+            # phrase merely because Naukri accepts the raw text.
+            if not self._select_exact_keyword_suggestion(query):
+                self._last_role_recognized = False
+                return False
+            self._last_role_recognized = True
+
+            self.page.wait_for_timeout(250)
 
             # Select 2 years in the current Naukri experience control.
             # Naukri renders this control as a dropdown; do not fall back to
@@ -916,6 +1033,11 @@ class NaukriAgent:
         self.page.wait_for_timeout(1200)
 
         searched = self._fill_search_form(query, location)
+
+        if not searched and self._last_role_recognized is False:
+            raise RoleNotRecognized(
+                f"Naukri autocomplete has no exact role suggestion for: {query}"
+            )
 
         if not searched:
             # The authenticated header is hydrated asynchronously. Give the
@@ -1465,29 +1587,57 @@ class NaukriAgent:
 
         return added
 
-    def scan_default(self, max_queries: int = 6, per_query: int = 12) -> list[FoundJob]:
-        """Run one broad search across the complete role/location target set."""
-        del max_queries  # retained only for CLI backward compatibility
-        del per_query   # retained only for CLI backward compatibility
+    def scan_default(self, max_queries: int = 30, per_query: int = 12) -> list[FoundJob]:
+        """Validate and search each role phrase, using all locations in one field.
 
-        combined_query = ", ".join(DEFAULT_QUERIES)
+        Naukri autocomplete is checked before each search. A role is searched only
+        when Naukri exposes that exact role/designation suggestion. This prevents
+        invented phrases such as ``SOC Analyst L2 L3`` from being treated as real
+        Naukri role names when the UI actually offers different options.
+        """
+        roles = DEFAULT_QUERIES[:max_queries]
         combined_location = ", ".join(PREFERRED_LOCATIONS)
-        print(f"[scan] combined_query_terms={len(DEFAULT_QUERIES)}", flush=True)
-        print(f"[scan] query={combined_query!r}", flush=True)
+        all_found: list[FoundJob] = []
+        seen = set()
+
+        print(f"[scan] role_checks={len(roles)}", flush=True)
         print(f"[scan] locations={combined_location!r}", flush=True)
 
-        try:
-            found_jobs = self.search(combined_query, combined_location, interactive=False)
-        except HumanActionRequired:
-            print("[scan] skipped verification-gated combined search", flush=True)
-            return []
+        for index, role in enumerate(roles, start=1):
+            variants = ROLE_VARIANTS.get(role, [role])
+            for variant_index, search_role in enumerate(variants, start=1):
+                print(
+                    f"[scan] role {index}/{len(roles)} variant {variant_index}/{len(variants)}: {search_role!r}",
+                    flush=True,
+                )
+                try:
+                    found_jobs = self.search(search_role, combined_location, interactive=False)
+                except RoleNotRecognized:
+                    print(f"[scan] SKIP_UNRECOGNIZED_ROLE: {search_role!r}", flush=True)
+                    continue
+                except HumanActionRequired:
+                    print(f"[scan] SKIP_VERIFICATION: {search_role!r}", flush=True)
+                    continue
+                except RuntimeError as exc:
+                    print(f"[scan] SEARCH_ERROR: {search_role!r}: {exc}", flush=True)
+                    continue
 
-        # Naukri currently exposes one result page to the extractor. Analyze every
-        # result card returned by that single broad search; do not discard cards by
-        # city or by which individual role phrase matched first.
-        print(f"[scan] discovered={len(found_jobs)} result cards", flush=True)
-        print(f"[scan] ingesting={len(found_jobs)} candidates", flush=True)
-        return self.ingest(found_jobs)
+                selected = 0
+                for job in found_jobs[:per_query]:
+                    key = job.url.split("?")[0]
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    all_found.append(job)
+                    selected += 1
+
+                print(
+                    f"[scan] VALID_ROLE results={len(found_jobs)} selected={selected} total_unique={len(all_found)}",
+                    flush=True,
+                )
+
+        print(f"[scan] ingesting={len(all_found)} unique role-search candidates", flush=True)
+        return self.ingest(all_found)
 
     def _all_contexts(self):
         """Return the top page plus any live iframes used by Naukri's apply UI."""
