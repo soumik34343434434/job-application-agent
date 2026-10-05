@@ -1,0 +1,29 @@
+name: Naukri Login Endpoint Probe
+
+on:
+  push:
+    branches:
+      - diag/naukri-edge-probe
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe login endpoint
+        run: |
+          python3 - <<'PY'
+          import urllib.request
+          req=urllib.request.Request("https://www.naukri.com/nlogin/login", headers={"User-Agent":"Mozilla/5.0"})
+          try:
+              with urllib.request.urlopen(req, timeout=20) as r:
+                  print("LOGIN_STATUS=", r.status)
+                  print("LOGIN_FINAL_URL=", r.geturl())
+                  print("LOGIN_SERVER=", r.headers.get("server"))
+                  print("LOGIN_BODY=", r.read(700).decode("utf-8","ignore").replace("\n"," "))
+          except Exception as e:
+              print("LOGIN_ERROR=", repr(e))
+          PY
