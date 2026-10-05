@@ -2234,7 +2234,10 @@ class NaukriAgent:
         # ingest() opens authoritative detail pages and applies preferred-location
         # OR matching, experience/CTC hard filters, scoring and deduplication.
         added = self.ingest(found_jobs)
-        print(f"[scan] FINAL_TARGETS={len(added)} after scoring/filtering", flush=True)
+        reviewable = sum(1 for job in added if (job.score or 0) >= profile["targeting"]["minimum_match_score_for_review"])
+        high_priority = sum(1 for job in added if (job.score or 0) >= profile["targeting"]["minimum_match_score_for_submit_recommendation"])
+        print(f"[scan] EVALUATED_NEW_JOBS={len(added)}", flush=True)
+        print(f"[scan] REVIEWABLE_TARGETS={reviewable} HIGH_PRIORITY_TARGETS={high_priority}", flush=True)
         return added
 
     def _all_contexts(self):
