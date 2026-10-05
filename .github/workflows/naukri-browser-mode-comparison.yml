@@ -1,0 +1,36 @@
+name: Naukri Browser Mode Comparison
+
+on:
+  push:
+    branches:
+      - diag/naukri-edge-probe
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Compare headless and headed Chromium
+        run: |
+          python3 -m pip install --quiet playwright
+          python3 -m playwright install --with-deps chromium >/dev/null 2>&1
+          xvfb-run -a python3 - <<'PY'
+          from playwright.sync_api import sync_playwright
+
+          with sync_playwright() as p:
+              for mode in [True, False]:
+                  b=p.chromium.launch(headless=mode)
+                  page=b.new_page(user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")
+                  label="HEADLESS" if mode else "HEADED"
+                  try:
+                      r=page.goto("https://www.naukri.com/", wait_until="domcontentloaded", timeout=20000)
+                      print(label+"_STATUS=", r.status if r else None)
+                      print(label+"_TITLE=", page.title())
+                      print(label+"_BODY=", page.locator("body").inner_text(timeout=5000)[:250].replace("\n"," "))
+                  except Exception as e:
+                      print(label+"_ERROR=",repr(e))
+                  b.close()
+          PY
