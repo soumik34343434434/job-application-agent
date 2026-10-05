@@ -492,6 +492,101 @@ class NaukriAgent:
                 continue
         return False
 
+    def _login_with_password(self, interactive: bool = False) -> bool:
+        """Attempt direct Naukri email/password login when credentials are configured.
+
+        This is the unattended fallback for fresh machines where a copied browser
+        session is rejected. CAPTCHA, OTP, or other security challenges are never
+        bypassed and cause a fail-closed result.
+        """
+        username, password = get_naukri_credentials()
+        if not username or not password:
+            return False
+
+        self.page.goto(
+            "https://www.naukri.com/nlogin/login",
+            wait_until="domcontentloaded",
+            timeout=15000,
+        )
+        self.page.wait_for_timeout(1200)
+
+        self._verification_guard(
+            "Naukri presented CAPTCHA/security verification during login",
+            interactive=interactive,
+        )
+
+        username_selectors = [
+            'input[autocomplete="username"]',
+            'input[name*="user" i]',
+            'input[placeholder*="email" i]',
+            'input[placeholder*="mobile" i]',
+            'input[type="email"]',
+            'input[type="text"]',
+        ]
+        password_selectors = [
+            'input[autocomplete="current-password"]',
+            'input[name*="pass" i]',
+            'input[placeholder*="password" i]',
+            'input[type="password"]',
+        ]
+
+        def fill_first(selectors, value):
+            for selector in selectors:
+                try:
+                    loc = self.page.locator(selector)
+                    for index in range(min(loc.count(), 5)):
+                        candidate = loc.nth(index)
+                        if candidate.is_visible() and candidate.is_enabled():
+                            candidate.fill(value)
+                            return True
+                except Exception:
+                    continue
+            return False
+
+        if not fill_first(username_selectors, username):
+            raise RuntimeError("Naukri login form did not expose an email/username field.")
+        if not fill_first(password_selectors, password):
+            raise RuntimeError("Naukri login form did not expose a password field.")
+
+        submit_candidates = [
+            self.page.get_by_role("button", name=re.compile(r"^login$|^sign in$|^log in$", re.I)),
+            self.page.get_by_role("button", name=re.compile(r"login|sign in", re.I)),
+            self.page.locator('button[type="submit"]'),
+            self.page.locator('input[type="submit"]'),
+        ]
+        clicked = False
+        for locator in submit_candidates:
+            try:
+                for index in range(min(locator.count(), 5)):
+                    candidate = locator.nth(index)
+                    if candidate.is_visible() and candidate.is_enabled():
+                        candidate.scroll_into_view_if_needed()
+                        candidate.click(timeout=6000)
+                        clicked = True
+                        break
+                if clicked:
+                    break
+            except Exception:
+                continue
+
+        if not clicked:
+            raise RuntimeError("Naukri login form did not expose a usable Login button.")
+
+        self.page.wait_for_timeout(2500)
+        self._verification_guard(
+            "Naukri presented CAPTCHA/security verification after login",
+            interactive=interactive,
+        )
+
+        body = self._body_text().lower()
+        if re.search(r"one[- ]time password|\botp\b|verification code|verify your", body):
+            raise RuntimeError(
+                "Naukri requires OTP or additional verification during login; "
+                "the unattended runner will not bypass it."
+            )
+
+        return self.is_logged_in()
+
     def ensure_logged_in(self, interactive: bool | None = None):
         if interactive is None:
             interactive = not bool(os.getenv("GITHUB_ACTIONS"))
@@ -511,13 +606,24 @@ class NaukriAgent:
             self._session_ready = True
             return
 
+        # A copied storage state can be rejected by Naukri on a different
+        # machine/IP. When direct credentials are available, establish a fresh
+        # session instead of treating that as an unrecoverable condition.
+        try:
+            if self._login_with_password(interactive=interactive):
+                self._session_ready = True
+                return
+        except HumanActionRequired:
+            raise
+        except RuntimeError as exc:
+            self._session_ready = False
+            raise RuntimeError(f"Unattended Naukri login failed: {exc}") from exc
+
         self._session_ready = False
         raise RuntimeError(
-            "Naukri is not logged in in the dedicated agent profile. "
-            "Run 'python3 -m src.cli naukri setup-browser' once, complete "
-            "Sign in with Google manually in that normal Chrome window, close it, "
-            "then run the agent again. The automation runner never attempts "
-            "to automate Google authentication."
+            "Naukri is not authenticated and no direct Naukri credentials are configured. "
+            "Configure NAUKRI_EMAIL and NAUKRI_PASSWORD as GitHub Actions secrets, "
+            "or refresh the authenticated browser state locally."
         )
 
     def create_account(self):
