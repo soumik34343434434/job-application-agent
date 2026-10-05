@@ -27,7 +27,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.ref_name }}
           fetch-depth: 0
 
       - name: Set up Python
@@ -152,4 +152,4 @@ jobs:
             exit 0
           fi
           git commit -m "chore: persist unattended agent state [skip ci]"
-          git push origin HEAD:main
+          git push origin HEAD:${GITHUB_REF_NAME}
