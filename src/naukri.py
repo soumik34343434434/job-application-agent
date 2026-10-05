@@ -453,6 +453,13 @@ class NaukriAgent:
         # the DOM, but collapsed behind .nI-gNb-sb__main. The searchAppWrapper
         # class belongs to the unrelated "Search appearances" section.
         candidates = [
+            # Current authenticated Naukri homepage exposes the collapsed
+            # search as a dedicated expand button. Prefer this over the older
+            # wrapper/span selectors because the span itself is not the click
+            # target in the current build.
+            self.page.locator("button.nI-gNb-sb__expand"),
+            self.page.get_by_role("button", name=re.compile(r"^search jobs here$", re.I)),
+            self.page.locator('[aria-label="Search jobs here"]'),
             self.page.locator("div.nI-gNb-sb__main"),
             self.page.locator(".nI-gNb-sb__placeholder"),
             self.page.get_by_text(re.compile(r"^search jobs here$", re.I)),
@@ -477,11 +484,29 @@ class NaukriAgent:
             except Exception:
                 return False
 
+        # Fast path for the current authenticated Naukri header. Wait briefly
+        # for the expand button because the header is hydrated after the page
+        # shell appears. Then trigger its React handler directly so animation
+        # stability cannot make the search surface flaky.
+        try:
+            expand = self.page.locator(
+                'button.nI-gNb-sb__expand[aria-label="Search jobs here"]'
+            ).first
+            expand.wait_for(state="attached", timeout=5000)
+            expand.wait_for(state="visible", timeout=5000)
+            if expand.is_enabled():
+                expand.evaluate("(e) => e.click()")
+                self.page.wait_for_timeout(700)
+                if search_controls_visible():
+                    return True
+        except Exception:
+            pass
+
         for loc in candidates:
             try:
                 for i in range(min(loc.count(), 20)):
                     candidate = loc.nth(i)
-                    if not candidate.is_visible() or not candidate.is_enabled():
+                    if not candidate.is_enabled():
                         continue
 
                     candidate.scroll_into_view_if_needed()
@@ -685,51 +710,51 @@ class NaukriAgent:
             # Naukri renders this control as a dropdown; do not fall back to
             # typing/pressing Enter because that can select "Fresher".
             if experience_field:
-                experience_field.click()
+                # The live dropdown input can be visually unstable during the
+                # header animation. Trigger its React handler directly first.
+                try:
+                    experience_field.evaluate("(e) => e.click()")
+                except Exception:
+                    experience_field.click(timeout=2500)
                 self.page.wait_for_timeout(500)
 
                 selected = False
                 target = re.compile(r"^2\s*years?$", re.I)
 
-                # Search visible option/text elements for exactly "2 years".
-                candidates = [
-                    self.page.get_by_role("option", name=target),
-                    self.page.get_by_text(target),
-                    self.page.locator("li"),
-                    self.page.locator('[role="option"]'),
-                    self.page.locator("div"),
-                ]
-
-                for loc in candidates:
-                    try:
-                        for i in range(min(loc.count(), 100)):
-                            candidate = loc.nth(i)
-                            if not candidate.is_visible() or not candidate.is_enabled():
-                                continue
-                            text = re.sub(r"\s+", " ", (candidate.inner_text() or "")).strip()
-                            aria = re.sub(r"\s+", " ", (candidate.get_attribute("aria-label") or "")).strip()
-                            if target.fullmatch(text) or target.fullmatch(aria):
-                                candidate.click()
-                                selected = True
-                                self.page.wait_for_timeout(400)
-                                break
-                    except Exception:
-                        continue
-                    if selected:
-                        break
+                # Current Naukri renders the experience menu as plain <li>
+                # elements. Use the exact visible option instead of scanning
+                # generic divs, which can contain the entire dropdown and make
+                # the live browser path slow/brittle.
+                options = self.page.locator("li")
+                try:
+                    for i in range(options.count()):
+                        candidate = options.nth(i)
+                        if not candidate.is_visible() or not candidate.is_enabled():
+                            continue
+                        option_text = re.sub(
+                            r"\s+",
+                            " ",
+                            (candidate.inner_text() or ""),
+                        ).strip()
+                        if target.fullmatch(option_text):
+                            candidate.click(timeout=3000)
+                            self.page.wait_for_timeout(300)
+                            selected = True
+                            break
+                except Exception:
+                    selected = False
 
                 if not selected:
-                    # Keyboard fallback: Naukri's list starts with Fresher, then
-                    # 1 year, then 2 years on the current UI. Two ArrowDown presses
-                    # therefore targets 2 years without selecting Fresher.
+                    # Keep the keyboard fallback deterministic: the current
+                    # Naukri order is Fresher, 1 year, 2 years.
                     try:
                         experience_field.press("ArrowDown")
                         experience_field.press("ArrowDown")
                         experience_field.press("Enter")
-                        self.page.wait_for_timeout(400)
+                        self.page.wait_for_timeout(300)
                         selected = True
                     except Exception:
-                        pass
+                        selected = False
 
                 # Verify the visible control no longer says Fresher. If the
                 # selection could not be verified, fail the search rather than
@@ -793,13 +818,14 @@ class NaukriAgent:
         except Exception:
             pass
 
-        # The inspected UI exposes a visible Search button.
+        # The inspected UI exposes a visible Search button. Prefer the DOM
+        # click because the header can still be transitioning between states.
         try:
             buttons = self.page.locator("button.nI-gNb-sb__icon-wrapper")
             for i in range(buttons.count()):
                 candidate = buttons.nth(i)
-                if candidate.is_visible() and candidate.is_enabled():
-                    candidate.click()
+                if candidate.is_enabled():
+                    candidate.evaluate("(e) => e.click()")
                     self.page.wait_for_timeout(3500)
                     return True
         except Exception:
@@ -1326,7 +1352,13 @@ class NaukriAgent:
             if duplicate:
                 continue
 
-            detail = self._extract_job_detail(canonical)
+            try:
+                detail = self._extract_job_detail(canonical)
+            except HumanActionRequired:
+                # A CAPTCHA/security gate on one listing should not stall a
+                # bulk discovery run. Application execution remains fail-safe
+                # and can still stop for human action on the selected job.
+                continue
             if not detail:
                 continue
 
@@ -1661,6 +1693,21 @@ class NaukriAgent:
             return "ALREADY_APPLIED"
 
         if not self._safe_click_apply():
+            # Some listings expose only an employer-hosted application control
+            # such as "Apply on company site". Treat that as an external
+            # application instead of a broken Naukri Apply selector.
+            external_apply = self.page.get_by_text(
+                re.compile(r"apply\s+(?:on|at)\s+(?:the\s+)?(?:company|employer)\s+site", re.I)
+            )
+            if external_apply.count():
+                log_event(job["id"], "EXTERNAL_APPLICATION", "Naukri exposes an employer-hosted application flow.")
+                set_status(
+                    job["id"],
+                    "EXTERNAL",
+                    "External application site detected; automatic submission disabled.",
+                    daily_cap,
+                )
+                return "EXTERNAL_APPLICATION"
             return "APPLY_BUTTON_NOT_FOUND"
 
         self.page.wait_for_timeout(1200)
