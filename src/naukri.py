@@ -142,6 +142,10 @@ class RoleNotRecognized(RuntimeError):
     """Naukri autocomplete does not contain the requested exact role phrase."""
 
 
+class AutocompleteUnavailable(RuntimeError):
+    """Naukri autocomplete did not return usable suggestions for this attempt."""
+
+
 def _cdp_is_available() -> bool:
     try:
         from urllib.request import urlopen
@@ -239,6 +243,7 @@ class NaukriAgent:
         self.browser_user_data_dir = None
         self.browser_profile_dir = None
         self._last_role_recognized = None
+        self._autocomplete_available = None
 
     def __enter__(self):
         ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
@@ -865,17 +870,29 @@ class NaukriAgent:
 
         if not keyword or not location_field:
             self._last_role_recognized = None
+            self._autocomplete_available = None
             return False
 
         self._last_role_recognized = None
+        self._autocomplete_available = None
         try:
             keyword.fill(query)
-            self.page.wait_for_timeout(700)
+            self.page.wait_for_timeout(1000)
 
             # Role searches use Naukri autocomplete as the source of truth.
             # Skill searches intentionally bypass designation validation because
             # the term may be a technology/concept rather than a job title.
             if validate_role:
+                options = self._keyword_autocomplete_options(query)
+                if not options:
+                    self.page.wait_for_timeout(1200)
+                    options = self._keyword_autocomplete_options(query)
+                self._autocomplete_available = bool(options)
+                if not options:
+                    # This means Naukri did not return a usable dropdown at all;
+                    # do not misclassify the role as nonexistent.
+                    self._last_role_recognized = None
+                    return False
                 if not self._select_exact_keyword_suggestion(query):
                     self._last_role_recognized = False
                     return False
@@ -1059,19 +1076,20 @@ class NaukriAgent:
         validate_role: bool = True,
     ) -> list[FoundJob]:
         self.ensure_logged_in(interactive=interactive)
-        try:
-            self.page.goto(NAUKRI_HOME, wait_until="domcontentloaded", timeout=15000)
-        except Exception as exc:
-            if "ERR_ABORTED" not in str(exc) or "naukri.com" not in (self.page.url or "").lower():
-                raise
-        self.page.wait_for_timeout(1200)
-
+        # _fill_search_form performs the single bounded homepage navigation.
+        # Avoid the previous duplicate goto() sequence, which made repeated role
+        # searches unnecessarily sensitive to Naukri's SPA hydration state.
         searched = self._fill_search_form(query, location, validate_role=validate_role)
 
-        if validate_role and not searched and self._last_role_recognized is False:
-            raise RoleNotRecognized(
-                f"Naukri autocomplete has no exact role suggestion for: {query}"
-            )
+        if validate_role and not searched:
+            if self._autocomplete_available is False:
+                raise AutocompleteUnavailable(
+                    f"Naukri autocomplete returned no usable suggestions for: {query}"
+                )
+            if self._last_role_recognized is False:
+                raise RoleNotRecognized(
+                    f"Naukri autocomplete has no exact role suggestion for: {query}"
+                )
 
         if not searched:
             # The authenticated header is hydrated asynchronously. Give the
@@ -1664,6 +1682,9 @@ class NaukriAgent:
                     found_jobs = self.search(search_role, combined_location, interactive=False, validate_role=True)
                 except RoleNotRecognized:
                     print(f"[scan] NOT_A_DESIGNATION: {search_role!r}", flush=True)
+                    continue
+                except AutocompleteUnavailable:
+                    print(f"[scan] AUTOCOMPLETE_UNAVAILABLE: {search_role!r}", flush=True)
                     continue
                 except HumanActionRequired:
                     print(f"[scan] SKIP_VERIFICATION: {search_role!r}", flush=True)
