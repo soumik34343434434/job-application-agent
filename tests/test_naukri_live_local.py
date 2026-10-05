@@ -196,10 +196,15 @@ def test_naukri_live_search_extract_and_score(tmp_path):
         if not details:
             pytest.fail("Found real job links, but could not extract authoritative job details.")
 
-        # Prefer an internal Apply target from the primary query. If the live
-        # result mix contains only employer-hosted flows, use the proven
-        # security-specialist query as a fallback canary.
-        if not any(item["apply_surface"] == "INTERNAL" for item in details):
+        # Prefer a security-related internal Apply target from the primary
+        # query. If the live result mix contains only external flows or unrelated
+        # internal flows, use the proven security-specialist query as a fallback.
+        security_internal_present = any(
+            item["apply_surface"] == "INTERNAL"
+            and re.search(r"security|cyber|infosec|information security", item["title"], re.I)
+            for item in details
+        )
+        if not security_internal_present:
             fallback_query = "Cyber Security Specialist"
             if not agent._fill_search_form(fallback_query, location, validate_role=False):
                 pytest.fail("Could not fill the fallback internal-Apply Naukri search.")
