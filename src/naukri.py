@@ -2309,39 +2309,142 @@ class NaukriAgent:
         if self.needs_human_verification():
             self._human_blocker(reason, interactive)
 
-    def _safe_click_apply(self) -> bool:
-        patterns = [
-            r"^apply$",
-            r"apply now",
-            r"apply on naukri",
-            r"quick apply",
-            r"apply for this job",
-        ]
-        existing_pages = list(self.context.pages) if self.context else [self.page]
+    def _apply_surface_state(self) -> str:
+        """Classify the visible job-page Apply surface without clicking.
 
+        Returns INTERNAL, EXTERNAL, ALREADY_APPLIED, CAPTCHA, or UNKNOWN.
+        A selector miss therefore remains distinguishable from an employer
+        redirect and from a security challenge.
+        """
+        if self.needs_human_verification():
+            return "CAPTCHA"
+        if self._already_applied_detected():
+            return "ALREADY_APPLIED"
+
+        body = self._all_context_text()
+        external_re = re.compile(
+            r"apply\s+(?:on|at)\s+(?:the\s+)?(?:company|employer)\s+site|"
+            r"apply\s+on\s+(?:their|company)\s+website",
+            re.I,
+        )
+        if external_re.search(body):
+            return "EXTERNAL"
+
+        apply_re = re.compile(
+            r"^(?:apply|apply now|quick apply|apply for this job)$",
+            re.I,
+        )
         for context in self._all_contexts():
-            for pat in patterns:
-                locators = [
-                    context.get_by_role("button", name=re.compile(pat, re.I)),
-                    context.get_by_role("link", name=re.compile(pat, re.I)),
-                    context.get_by_text(re.compile(pat, re.I)),
+            try:
+                candidates = [
+                    context.get_by_role("button", name=apply_re),
+                    context.get_by_role("link", name=apply_re),
+                    context.locator('[role="button"]').filter(has_text=apply_re),
+                    context.locator("button, a").filter(has_text=apply_re),
                 ]
-                for loc in locators:
+                for loc in candidates:
+                    for index in range(min(loc.count(), 20)):
+                        candidate = loc.nth(index)
+                        try:
+                            if candidate.is_visible() and candidate.is_enabled():
+                                return "INTERNAL"
+                        except Exception:
+                            continue
+            except Exception:
+                continue
+
+        fallback = (
+            'button[id*="apply" i], a[id*="apply" i], '
+            'button[class*="apply" i], a[class*="apply" i], '
+            '[data-test*="apply" i], [data-qa*="apply" i]'
+        )
+        for context in self._all_contexts():
+            try:
+                loc = context.locator(fallback)
+                for index in range(min(loc.count(), 20)):
+                    candidate = loc.nth(index)
                     try:
-                        count = loc.count()
-                        for index in range(count):
-                            candidate = loc.nth(index)
-                            if not candidate.is_visible() or not candidate.is_enabled():
-                                continue
-                            candidate.scroll_into_view_if_needed()
-                            candidate.click(timeout=5000)
-                            self.page.wait_for_timeout(1500)
-                            if self.context:
-                                current_pages = self.context.pages
-                                if len(current_pages) > len(existing_pages):
-                                    self.page = current_pages[-1]
-                                    self.page.set_default_timeout(12000)
-                            return True
+                        text = " ".join((candidate.inner_text() or "").split()).lower()
+                        if candidate.is_visible() and candidate.is_enabled() and (
+                            text == "apply" or "apply" in text
+                        ):
+                            return "INTERNAL"
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+
+        return "UNKNOWN"
+
+    def _apply_surface_diagnostics(self) -> dict:
+        """Return bounded diagnostics for a failed/ambiguous Apply surface."""
+        diagnostics = {
+            "url": self.page.url if self.page else "",
+            "state": self._apply_surface_state(),
+            "title": "",
+            "visible_apply_controls": [],
+        }
+        try:
+            diagnostics["title"] = self.page.title()
+        except Exception:
+            pass
+        applyish = re.compile(r"apply|quick apply", re.I)
+        for context in self._all_contexts():
+            try:
+                loc = context.locator("button, a, [role='button']")
+                for index in range(min(loc.count(), 100)):
+                    item = loc.nth(index)
+                    if not item.is_visible():
+                        continue
+                    txt = " ".join((item.inner_text() or "").split())
+                    aria = item.get_attribute("aria-label") or ""
+                    if applyish.search(txt) or applyish.search(aria):
+                        diagnostics["visible_apply_controls"].append({
+                            "tag": (item.evaluate("(e) => e.tagName") or "").lower(),
+                            "text": txt[:160],
+                            "aria": aria[:160],
+                            "id": (item.get_attribute("id") or "")[:120],
+                            "class": (item.get_attribute("class") or "")[:160],
+                        })
+            except Exception:
+                continue
+        diagnostics["visible_apply_controls"] = diagnostics["visible_apply_controls"][:20]
+        return diagnostics
+
+    def _safe_click_apply(self) -> bool:
+        """Click only a classifier-approved internal Naukri Apply control."""
+        if self._apply_surface_state() != "INTERNAL":
+            return False
+
+        apply_re = re.compile(
+            r"^(?:apply|apply now|quick apply|apply for this job)$",
+            re.I,
+        )
+        for context in self._all_contexts():
+            locators = [
+                context.get_by_role("button", name=apply_re),
+                context.get_by_role("link", name=apply_re),
+                context.locator('[role="button"]').filter(has_text=apply_re),
+                context.locator("button, a").filter(has_text=apply_re),
+            ]
+            for loc in locators:
+                for index in range(min(loc.count(), 20)):
+                    candidate = loc.nth(index)
+                    try:
+                        if not candidate.is_visible() or not candidate.is_enabled():
+                            continue
+                        candidate.scroll_into_view_if_needed()
+                        candidate.click(timeout=6000)
+                        self.page.wait_for_timeout(1500)
+                        pages = list(self.context.pages) if self.context else [self.page]
+                        naukri_pages = [
+                            page for page in pages
+                            if "naukri.com" in (page.url or "").lower()
+                        ]
+                        if naukri_pages:
+                            self.page = naukri_pages[-1]
+                            self.page.set_default_timeout(12000)
+                        return True
                     except Exception:
                         continue
         return False
