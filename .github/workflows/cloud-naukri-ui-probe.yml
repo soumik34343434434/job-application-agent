@@ -1,0 +1,64 @@
+name: Cloud Naukri UI Probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Restore Naukri state
+        env:
+          NAUKRI_STATE_KEY: ${{ secrets.NAUKRI_STATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${NAUKRI_STATE_KEY}"
+          test -f runtime/naukri.storage-state.enc
+          mkdir -p runtime outbox/browser_artifacts
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000             -pass env:NAUKRI_STATE_KEY             -in runtime/naukri.storage-state.enc             -out runtime/naukri.storage-state.json
+
+      - name: Probe authenticated headful UI
+        env:
+          PYTHONPATH: .
+          NAUKRI_STORAGE_STATE_PATH: ${{ github.workspace }}/runtime/naukri.storage-state.json
+          TZ: Asia/Kolkata
+        run: |
+          xvfb-run -a --server-args="-screen 0 1365x900x24"             python - <<'PY'
+          import json
+          from src.naukri import NaukriAgent
+
+          with NaukriAgent(headless=False, slow_mo=0) as agent:
+              print(json.dumps({
+                  "logged_in": agent.is_logged_in(),
+                  "url_before_probe": agent.page.url,
+              }, indent=2))
+              print(json.dumps(agent.inspect_search_control(), indent=2, ensure_ascii=False))
+          PY
+
+      - name: Upload UI probe artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-naukri-ui-probe-${{ github.run_id }}
+          path: outbox/browser_artifacts/
+          if-no-files-found: ignore
+          retention-days: 7
