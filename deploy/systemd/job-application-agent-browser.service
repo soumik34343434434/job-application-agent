@@ -1,5 +1,5 @@
 [Unit]
-Description=Dedicated Chrome for Job Application Agent
+Description=Dedicated Chromium for Job Application Agent
 After=job-application-agent-display.service network-online.target
 Wants=job-application-agent-display.service network-online.target
 Requires=job-application-agent-display.service
@@ -9,9 +9,10 @@ Type=simple
 WorkingDirectory=%h/job_application_agent
 Environment=DISPLAY=:99
 Environment=NAUKRI_CDP_PORT=9229
-ExecStart=/usr/bin/google-chrome --user-data-dir=%h/job_application_agent/.browser/naukri_agent --remote-debugging-address=127.0.0.1 --remote-debugging-port=9229 --no-first-run --no-default-browser-check --disable-gpu --disable-dev-shm-usage
+Environment=NAUKRI_CDP_HOST=127.0.0.1
+ExecStart=/bin/sh %h/job_application_agent/scripts/run_browser.sh
 Restart=always
 RestartSec=5
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target

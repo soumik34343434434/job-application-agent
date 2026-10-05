@@ -1,10 +1,10 @@
 [Unit]
-Description=Run Job Application Agent every 72 hours
+Description=Wake Job Application Agent scheduler
 
 [Timer]
 OnBootSec=15min
-OnUnitActiveSec=72h
-Persistent=true
+OnUnitActiveSec=1h
+AccuracySec=5min
 Unit=job-application-agent.service
 
 [Install]
