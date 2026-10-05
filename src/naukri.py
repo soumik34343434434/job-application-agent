@@ -1999,116 +1999,195 @@ class NaukriAgent:
         return added
 
     def scan_default(self, max_queries: int = 30, per_query: int = 20) -> list[FoundJob]:
-        """Check all role/location autocomplete, then run one real broad search.
+        """Run OR-style role retrieval, then apply location/role scoring locally.
 
-        Each role and location is entered independently so Naukri's autocomplete
-        can contribute its canonical wording. The selected values are recorded for
-        auditability, but they are not joined into a single comma query because
-        Naukri's backend treats comma-separated values as literal text. The actual
-        job retrieval uses one broad ``Security`` search with 2 years and no
-        location constraint; ingest() then applies the approved location list,
-        experience, CTC, JD, resume-skill matching, scoring, and dedupe locally.
+        Naukri's keyword box does not reliably implement a large comma-separated
+        OR expression. Each configured role intent therefore gets its own search
+        with the experience selector set to 2 years and no location restriction.
+        The union of those result sets implements the OR across roles.
+
+        Preferred locations remain an OR condition, but they are enforced locally
+        from authoritative job detail pages. This avoids the 30 x 13 search matrix.
+        Duplicate result URLs are removed before deep JD analysis.
         """
-        del max_queries
-        del per_query
+        from .cli import load_profile
 
-        print(f"[scan] AUTOCOMPLETE_ROLES={len(DEFAULT_QUERIES)}", flush=True)
-        print(f"[scan] AUTOCOMPLETE_LOCATIONS={len(PREFERRED_LOCATIONS)}", flush=True)
+        profile = load_profile()
+        role_count = min(max(queries := max_queries, 0), len(DEFAULT_QUERIES))
+        roles = DEFAULT_QUERIES[:role_count]
+        if per_query < 1:
+            raise ValueError("per_query must be >= 1")
 
+        print(f"[scan] ROLE_SEARCHES={len(roles)}", flush=True)
+        print("[scan] LOCATION_RETRIEVAL=unrestricted; LOCAL_LOCATION_LOGIC=OR", flush=True)
+        print(f"[scan] EXPERIENCE_FILTER={SEARCH_EXPERIENCE}", flush=True)
+
+        # Canonicalize roles/locations first so the browser still follows the
+        # user's autocomplete workflow and keeps an auditable mapping artifact.
+        report_path = ARTIFACT_DIR / "latest_search_autocomplete_report.json"
+        role_report = None
+        location_report = None
+
+        # Reuse a complete, previously verified autocomplete mapping when one
+        # exists. This prevents a transient Naukri dropdown failure from blocking
+        # the actual 30-role retrieval run; autocomplete is a discovery artifact,
+        # not a prerequisite for every individual search.
         try:
-            # Open the search shell once and keep that exact live form mounted.
-            if not self._fill_search_shell():
-                raise RuntimeError("Could not open Naukri search shell for autocomplete discovery.")
+            if report_path.exists():
+                cached = json.loads(report_path.read_text(encoding="utf-8"))
+                if (
+                    len(cached.get("roles", [])) >= role_count
+                    and len(cached.get("locations", [])) == len(PREFERRED_LOCATIONS)
+                ):
+                    role_report = cached["roles"][:role_count]
+                    location_report = cached["locations"]
+                    print(f"[scan] AUTOCOMPLETE_CACHE=USING {report_path}", flush=True)
+        except Exception:
+            role_report = None
+            location_report = None
 
-            keyword = self._first_visible_editable([
-                'input[placeholder="Enter keyword / designation / companies"]'
-            ])
-            experience = self._first_visible_editable([
-                'input[placeholder="Select experience"]'
-            ])
-            location = self._first_visible_editable([
-                'input[placeholder="Enter location"]'
-            ])
-            if not keyword or not experience or not location:
-                raise RuntimeError("Naukri search controls are unavailable.")
-
-            # 1) Check every role independently against autocomplete.
-            role_report = self._collect_autocomplete_mappings(
-                DEFAULT_QUERIES,
-                "role",
-                ensure_shell=False,
-            )
-
-            # 2) Set the requested 2-year experience filter.
-            print("[search-builder] selecting experience=2 years", flush=True)
-            if not self._select_two_years(experience):
-                raise RuntimeError("Could not select/verify Naukri experience = 2 years.")
-
-            # 3) Check every location independently against autocomplete.
-            location_report = self._collect_autocomplete_mappings(
-                PREFERRED_LOCATIONS,
-                "location",
-                ensure_shell=False,
-            )
-
-            report = {
-                "roles": role_report,
-                "locations": location_report,
-                "experience": SEARCH_EXPERIENCE,
-                "search_strategy": "broad Security search + local role/location/JD scoring",
-            }
+        if role_report is None or location_report is None:
             try:
-                report_path = ARTIFACT_DIR / "latest_search_autocomplete_report.json"
+                if not self._fill_search_shell():
+                    raise RuntimeError("Could not open Naukri search shell for autocomplete discovery.")
+
+                role_report = self._collect_autocomplete_mappings(
+                    roles,
+                    "role",
+                    ensure_shell=False,
+                )
+                location_report = self._collect_autocomplete_mappings(
+                    PREFERRED_LOCATIONS,
+                    "location",
+                    ensure_shell=False,
+                )
+
+                report = {
+                    "roles": role_report,
+                    "locations": location_report,
+                    "experience": SEARCH_EXPERIENCE,
+                    "search_strategy": (
+                        "one Naukri search per role; 2 years; unrestricted retrieval location; "
+                        "preferred locations are OR-filtered locally; dedupe + JD scoring"
+                    ),
+                }
                 report_path.write_text(
                     json.dumps(report, indent=2, ensure_ascii=False),
                     encoding="utf-8",
                 )
                 print(f"[scan] AUTOCOMPLETE_REPORT={report_path}", flush=True)
-            except Exception:
-                pass
+            except HumanActionRequired:
+                print("[scan] SKIP_VERIFICATION: autocomplete discovery", flush=True)
+                return []
+            except RuntimeError as exc:
+                print(f"[scan] SEARCH_ERROR: {exc}", flush=True)
+                return []
 
-            # 4) Final retrieval uses a Naukri-supported single keyword and no
-            # multi-location string. The approved location list is enforced from
-            # the authoritative detail-page location during ingest().
+        found_by_url: dict[str, FoundJob] = {}
+        search_log = []
+
+        # One actual Naukri retrieval per role. Location is intentionally blank:
+        # preferred locations are an OR condition handled after the JD is opened.
+        for index, (requested, mapping) in enumerate(zip(roles, role_report), start=1):
+            query = mapping.get("selected") or requested
+            validate_role = mapping.get("selected") is not None
             print(
-                f"[scan] BROAD_SEARCH query='Security' experience={SEARCH_EXPERIENCE!r} location='all India'",
+                f"[scan] ROLE_SEARCH {index}/{len(roles)} requested={requested!r} "
+                f"query={query!r} location=<unrestricted>",
                 flush=True,
             )
-            keyword.fill("Security")
-            location.fill("")
-            self.page.wait_for_timeout(250)
-
-            buttons = self.page.locator("button.nI-gNb-sb__icon-wrapper")
-            clicked = False
-            for i in range(buttons.count()):
-                candidate = buttons.nth(i)
-                if candidate.is_visible() and candidate.is_enabled():
-                    candidate.evaluate("(e) => e.click()")
-                    clicked = True
-                    break
-            if not clicked:
-                raise RuntimeError("Could not click Naukri's Search button.")
-
-            self.page.wait_for_timeout(3500)
-            if self.needs_human_verification():
-                self._human_blocker(
-                    "Naukri presented CAPTCHA/security verification during broad search",
+            try:
+                jobs = self.search(
+                    query=query,
+                    location="",
                     interactive=False,
+                    # Autocomplete was already resolved above (or loaded from
+                    # the verified mapping artifact). Do not re-open the dropdown
+                    # for every search; that creates unnecessary SPA races.
+                    validate_role=False,
                 )
-            found_jobs = self._extract_jobs()
+                limited = jobs[:per_query]
+                new_count = 0
+                for job in limited:
+                    key = job.url.split("?")[0].rstrip("/").lower()
+                    if not key or key in found_by_url:
+                        continue
+                    found_by_url[key] = job
+                    new_count += 1
 
-        except HumanActionRequired:
-            print("[scan] SKIP_VERIFICATION: broad search", flush=True)
-            return []
-        except RuntimeError as exc:
-            print(f"[scan] SEARCH_ERROR: {exc}", flush=True)
-            return []
+                search_log.append({
+                    "index": index,
+                    "requested": requested,
+                    "query": query,
+                    "result_cards": len(jobs),
+                    "retained_cards": len(limited),
+                    "new_unique_jobs": new_count,
+                })
+                print(
+                    f"[scan] ROLE_SEARCH_RESULT {index}/{len(roles)} "
+                    f"cards={len(jobs)} retained={len(limited)} new_unique={new_count}",
+                    flush=True,
+                )
+            except HumanActionRequired as exc:
+                search_log.append({
+                    "index": index,
+                    "requested": requested,
+                    "query": query,
+                    "error": type(exc).__name__,
+                })
+                print(f"[scan] ROLE_SEARCH_STOP: {exc}", flush=True)
+                print("[scan] SKIP_VERIFICATION: stopping role retrieval safely", flush=True)
+                return []
+            except (AutocompleteUnavailable, RoleNotRecognized) as exc:
+                search_log.append({
+                    "index": index,
+                    "requested": requested,
+                    "query": query,
+                    "error": type(exc).__name__,
+                })
+                print(f"[scan] ROLE_SEARCH_SKIP {index}/{len(roles)}: {exc}", flush=True)
+                continue
+            except RuntimeError as exc:
+                search_log.append({
+                    "index": index,
+                    "requested": requested,
+                    "query": query,
+                    "error": str(exc),
+                })
+                print(f"[scan] ROLE_SEARCH_ERROR {index}/{len(roles)}: {exc}", flush=True)
+                continue
 
-        print(f"[scan] RESULT_POOL={len(found_jobs)} real job cards", flush=True)
+        found_jobs = list(found_by_url.values())
+
+        scan_artifact = ARTIFACT_DIR / "latest_or_search_report.json"
+        try:
+            scan_artifact.write_text(
+                json.dumps(
+                    {
+                        "experience": SEARCH_EXPERIENCE,
+                        "role_count": len(roles),
+                        "location_logic": "OR (local authoritative-detail filter)",
+                        "retrieval_location": "unrestricted",
+                        "unique_result_count": len(found_jobs),
+                        "searches": search_log,
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            print(f"[scan] SEARCH_REPORT={scan_artifact}", flush=True)
+        except Exception:
+            pass
+
+        print(f"[scan] RESULT_POOL={len(found_jobs)} unique real job cards", flush=True)
         print(
-            "[scan] FILTERING=role taxonomy + JD/resume skills + experience + CTC + preferred location + dedupe",
+            "[scan] FILTERING=role OR + location OR + experience + CTC + JD/resume skills + dedupe + score",
             flush=True,
         )
+
+        # ingest() opens authoritative detail pages and applies preferred-location
+        # OR matching, experience/CTC hard filters, scoring and deduplication.
         added = self.ingest(found_jobs)
         print(f"[scan] FINAL_TARGETS={len(added)} after scoring/filtering", flush=True)
         return added
