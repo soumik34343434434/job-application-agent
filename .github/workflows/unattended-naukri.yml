@@ -5,6 +5,12 @@ on:
     # GitHub cron is UTC. 04:30 UTC = 10:00 IST.
     - cron: "30 4 * * *"
   workflow_dispatch:
+    inputs:
+      force_run:
+        description: "Run immediately even when the 72-hour schedule is not due"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -82,11 +88,11 @@ jobs:
           # repository variable UNATTENDED_LIVE_SUBMISSION=true.
           UNATTENDED_LIVE_SUBMISSION: ${{ vars.UNATTENDED_LIVE_SUBMISSION }}
         run: |
-          python -m src.cli naukri scheduled-run \
-            --scan-queries 30 \
-            --per-query 20 \
-            --limit 5 \
-            --slow-mo 0
+          args=(naukri scheduled-run --scan-queries 30 --per-query 20 --limit 5 --slow-mo 0)
+          if [ "${{ inputs.force_run }}" = "true" ]; then
+            args+=(--force)
+          fi
+          python -m src.cli "${args[@]}"
 
       - name: Re-encrypt refreshed Naukri state
         if: always()
