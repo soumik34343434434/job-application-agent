@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 from pathlib import Path
 import pytest
@@ -237,9 +238,16 @@ def test_naukri_live_search_extract_and_score(tmp_path):
         # Safe live application-target regression. We verify an actual INTERNAL
         # Naukri Apply control but deliberately do not click it: Naukri's current
         # one-click Apply can itself submit the application.
-        internal = [item for item in details if item["apply_surface"] == "INTERNAL"]
+        internal = [
+            item
+            for item in details
+            if item["apply_surface"] == "INTERNAL"
+            and re.search(r"security|cyber|infosec|information security", item["title"], re.I)
+        ]
         if not internal:
-            pytest.fail("No INTERNAL Naukri Apply surface was found in the live canary queries.")
+            pytest.fail(
+                "No security-related INTERNAL Naukri Apply surface was found in the live canary queries."
+            )
         candidate = max(internal, key=lambda item: int(item["score"]))
         from src.db import add_job
 
