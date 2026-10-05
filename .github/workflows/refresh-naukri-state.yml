@@ -1,0 +1,74 @@
+name: Refresh Naukri State
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-naukri-state
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: [self-hosted, macOS, X64]
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Prepare native ARM64 Python
+        run: |
+          set -e
+          for candidate in /opt/homebrew/bin/python3 /usr/local/bin/python3 /opt/homebrew/bin/python3.13 /opt/homebrew/bin/python3.12 /opt/homebrew/bin/python3.11; do
+            if [ -x "$candidate" ]; then
+              if arch -arm64 "$candidate" -c 'import sys; print(sys.version_info >= (3, 10))' 2>/dev/null | grep -q True; then
+                echo "CI_PYTHON=$candidate" >> "$GITHUB_ENV"
+                exit 0
+              fi
+            fi
+          done
+          exit 1
+
+      - name: Install dependencies
+        run: |
+          arch -arm64 "$CI_PYTHON" -m venv .refresh-venv
+          arch -arm64 .refresh-venv/bin/python -m pip install --upgrade pip
+          arch -arm64 .refresh-venv/bin/python -m pip install -r requirements.txt
+
+      - name: Export authenticated Naukri state
+        env:
+          PYTHONPATH: .
+          NAUKRI_CDP_PORT: "9229"
+        run: |
+          arch -arm64 .refresh-venv/bin/python -m src.cli naukri export-storage-state             --output runtime/naukri.storage-state.json
+
+      - name: Encrypt refreshed state
+        env:
+          NAUKRI_STATE_KEY: ${{ secrets.NAUKRI_STATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${NAUKRI_STATE_KEY}"
+          test -s runtime/naukri.storage-state.json
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt             -pass env:NAUKRI_STATE_KEY             -in runtime/naukri.storage-state.json             -out runtime/naukri.storage-state.enc.new
+          mv runtime/naukri.storage-state.enc.new runtime/naukri.storage-state.enc
+          rm -f runtime/naukri.storage-state.json
+
+      - name: Validate ciphertext and persist
+        run: |
+          set -euo pipefail
+          test -s runtime/naukri.storage-state.enc
+          git status --short
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add runtime/naukri.storage-state.enc
+          if git diff --cached --quiet; then
+            echo "No state change to persist."
+            exit 0
+          fi
+          git commit -m "chore: refresh Naukri authenticated state [skip ci]"
+          git push origin HEAD:main
