@@ -1,0 +1,53 @@
+name: Naukri Edge Diagnostics
+
+on:
+  push:
+    branches:
+      - diag/naukri-edge-probe
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Probe network
+        shell: bash
+        run: |
+          set -u
+          echo "=== RUNNER ==="
+          uname -a
+          echo "RUNNER_ARCH=$RUNNER_ARCH"
+          echo "=== PUBLIC IP ==="
+          curl -4 --max-time 10 -sS https://api.ipify.org || true
+          echo
+          echo "=== DNS ==="
+          getent ahostsv4 www.naukri.com || true
+          echo "=== CURL ==="
+          curl -4 -L --max-time 20 -sS -D /tmp/headers.txt -o /tmp/body.txt https://www.naukri.com/ || true
+          echo "--- headers ---"
+          sed -n '1,40p' /tmp/headers.txt || true
+          echo "--- body ---"
+          head -c 800 /tmp/body.txt | tr '\n' ' ' || true
+          echo
+          echo "=== PLAYWRIGHT ==="
+          python -m pip install --quiet playwright
+          python -m playwright install --with-deps chromium >/dev/null 2>&1
+          python - <<'PY'
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as p:
+              b=p.chromium.launch(headless=True)
+              page=b.new_page(user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")
+              try:
+                  r=page.goto("https://www.naukri.com/", wait_until="domcontentloaded", timeout=20000)
+                  print("PW_STATUS=", r.status if r else None)
+                  print("PW_URL=", page.url)
+                  print("PW_TITLE=", page.title())
+                  print("PW_BODY=", page.locator("body").inner_text(timeout=5000)[:800].replace("\n"," "))
+              except Exception as e:
+                  print("PW_ERR=", repr(e))
+              finally:
+                  b.close()
+          PY
