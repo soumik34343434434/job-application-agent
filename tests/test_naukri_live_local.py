@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from src.naukri import HumanActionRequired, NaukriAgent
+from src import db
 from src.scorer import score_job
 
 
@@ -121,6 +122,8 @@ def test_naukri_live_search_extract_and_score():
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
     agent = NaukriAgent(headless=False, slow_mo=0)
+    db.DB_PATH = tmp_path / "naukri_live.sqlite3"
+    db.init_db()
     try:
         agent.__enter__()
 
