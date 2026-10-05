@@ -384,55 +384,60 @@ class NaukriAgent:
         input()
 
     def is_logged_in(self) -> bool:
-        """Verify an authenticated Naukri session from the jobseeker homepage.
+        """Verify an authenticated Naukri session with a small transient retry.
 
-        Do not treat a /mnjuser URL alone as proof of authentication: cloud
-        browsers can receive an error document while the URL remains unchanged.
+        A self-hosted Chrome page can briefly expose a blank/error document while
+        retaining the authenticated homepage URL. Treat that as inconclusive and
+        re-navigate to the homepage before declaring the session unauthenticated.
         """
-        try:
-            current_url = (self.page.url or "").lower()
-            if "naukri.com" not in current_url or "mnjuser/homepage" not in current_url:
-                self.page.goto(
-                    NAUKRI_HOME,
-                    wait_until="domcontentloaded",
-                    timeout=15000,
-                )
-                self.page.wait_for_timeout(1000)
+        error_markers = (
+            "this site can’t be reached",
+            "this site can't be reached",
+            "err_http2_protocol_error",
+            "err_connection",
+            "temporarily down",
+            "webpage might be temporarily down",
+        )
+        authenticated_markers = (
+            "my naukri",
+            "my profile",
+            "view profile",
+            "logout",
+            "sign out",
+            "profile completeness",
+        )
 
-            url = (self.page.url or "").lower()
-            text = self._body_text()
+        for attempt in range(3):
+            try:
+                current_url = (self.page.url or "").lower()
+                url_ok = "naukri.com/mnjuser/homepage" in current_url
 
-            # Explicit login/registration routes mean unauthenticated.
-            if "/nlogin/" in url or ("/login" in url and "naukri.com" in url):
-                return False
+                # Refresh the authenticated homepage whenever the current page is
+                # blank, off-route, or lacks an authenticated marker. This absorbs
+                # transient SPA hydration/network races without accepting errors.
+                if not url_ok or attempt > 0:
+                    self.page.goto(
+                        NAUKRI_HOME,
+                        wait_until="domcontentloaded",
+                        timeout=15000,
+                    )
+                self.page.wait_for_timeout(800 + attempt * 700)
 
-            # Browser/network error pages must never count as authentication.
-            error_markers = (
-                "this site can’t be reached",
-                "this site can't be reached",
-                "err_http2_protocol_error",
-                "err_connection",
-                "temporarily down",
-                "webpage might be temporarily down",
-            )
-            if any(marker in text for marker in error_markers):
-                return False
+                url = (self.page.url or "").lower()
+                text = self._body_text()
 
-            authenticated_markers = (
-                "my naukri",
-                "my profile",
-                "view profile",
-                "logout",
-                "sign out",
-                "profile completeness",
-            )
-            if "mnjuser/homepage" in url and any(marker in text for marker in authenticated_markers):
-                return True
+                if "/nlogin/" in url or ("/login" in url and "naukri.com" in url):
+                    continue
+                if any(marker in text for marker in error_markers):
+                    continue
+                if "mnjuser/homepage" in url and any(
+                    marker in text for marker in authenticated_markers
+                ):
+                    return True
+            except Exception:
+                continue
 
-            # A generic public homepage without authenticated markers is not enough.
-            return False
-        except Exception:
-            return False
+        return False
 
     def open_home(self, interactive: bool = True):
         try:
