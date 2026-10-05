@@ -136,3 +136,49 @@ python3 -m src.cli naukri login
 ```
 
 The login command now keeps Chrome open after authentication. Press Enter in the VS Code terminal when you want the agent to close the browser.
+
+
+## Persistent VM mode for Google SSO
+
+For a Naukri account that uses **Sign in with Google**, the production browser must keep one persistent browser profile. The GitHub-hosted Ubuntu runner is intentionally not used for production Naukri login because its browser machine is disposable and a Google-authenticated Naukri session is not reliably portable to a different machine.
+
+Use a persistent Ubuntu/Debian VM that stays powered on. The repository already contains systemd services for Xvfb, the dedicated Chrome profile, VNC, and the hourly scheduler. Install them with:
+
+```bash
+cd ~/job_application_agent
+bash deploy/install_persistent_vm.sh
+```
+
+The installer enables systemd user lingering so the browser and scheduler continue running after SSH logout and reboot. It also keeps VNC bound to localhost; access it through an SSH tunnel rather than exposing VNC to the internet.
+
+### First Google SSO bootstrap
+
+Connect to the VM display through an SSH tunnel, then manually complete:
+
+```
+Naukri -> Login -> Sign in with Google
+```
+
+After the authenticated Naukri session is present in the dedicated Chrome profile, leave that browser profile on the VM. Do not export it into GitHub Actions and do not put Google credentials in GitHub Secrets.
+
+Verify the persistent VM with:
+
+```bash
+python3 -m src.cli naukri login
+python3 -m src.cli naukri schedule-status
+systemctl --user status job-application-agent-browser.service
+systemctl --user status job-application-agent.timer
+```
+
+The production path is then:
+
+```
+Persistent VM
+  -> dedicated Chrome profile
+  -> Google SSO session
+  -> Naukri search/score
+  -> existing SQLite duplicate/cap/schedule controls
+  -> existing fail-closed application state machine
+```
+
+The GitHub Actions workflow remains useful for regression tests and repository maintenance, but it is not the production execution environment for this Google-SSO account.
