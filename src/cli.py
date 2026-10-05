@@ -1,4 +1,5 @@
 import argparse
+import os
 import json
 import re
 from datetime import datetime, timezone, timedelta
@@ -84,6 +85,18 @@ def cmd_naukri_create_account(args):
     from .naukri import NaukriAgent
     with NaukriAgent(headless=False, slow_mo=args.slow_mo) as agent:
         print(agent.create_account())
+
+
+def cmd_naukri_export_storage_state(args):
+    """Export the authenticated Naukri browser state for CI bootstrap."""
+    from .naukri import NaukriAgent
+
+    output = Path(args.output).expanduser()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with NaukriAgent(headless=False, slow_mo=0) as agent:
+        agent.ensure_logged_in(interactive=True)
+        agent.context.storage_state(path=str(output))
+    print(f"Exported Naukri storage state to {output}")
 
 
 def cmd_naukri_setup_browser(args):
@@ -303,6 +316,10 @@ def cmd_naukri_scheduled_run(args):
         return
 
     auto_submit = bool(schedule.get("auto_submit", False))
+    if os.getenv("GITHUB_ACTIONS") and auto_submit:
+        # Second independent safety gate for unattended live submissions.
+        # The profile alone can never enable real submissions in CI.
+        auto_submit = os.getenv("UNATTENDED_LIVE_SUBMISSION", "").lower() == "true"
     results = []
     run_status = "COMPLETED"
     try:
@@ -312,7 +329,7 @@ def cmd_naukri_scheduled_run(args):
             "mode": "AUTO_SUBMIT" if auto_submit else "DRY_RUN_PREPARE_ONLY",
             "limit": limit,
         }, indent=2), flush=True)
-        with NaukriAgent(headless=False, slow_mo=args.slow_mo) as agent:
+        with NaukriAgent(headless=bool(os.getenv("GITHUB_ACTIONS")) or bool(os.getenv("NAUKRI_STORAGE_STATE_PATH")), slow_mo=args.slow_mo) as agent:
             jobs = agent.scan_default(max_queries=args.scan_queries, per_query=args.per_query)
             results = agent.auto_apply_from_queue(limit=limit, auto_submit=auto_submit)
         submitted = sum(1 for item in results if item.get("outcome") == "SUBMITTED")
@@ -368,6 +385,7 @@ def main():
     ns = naukri.add_subparsers(required=True)
     x = ns.add_parser("setup-credentials"); x.set_defaults(func=cmd_naukri_setup)
     x = ns.add_parser("create-account"); x.add_argument("--slow-mo", type=int, default=150); x.set_defaults(func=cmd_naukri_create_account)
+    x = ns.add_parser("export-storage-state"); x.add_argument("--output", default="runtime/naukri.storage-state.json"); x.set_defaults(func=cmd_naukri_export_storage_state)
     x = ns.add_parser("setup-browser"); x.set_defaults(func=cmd_naukri_setup_browser)
     x = ns.add_parser("login"); x.add_argument("--slow-mo", type=int, default=150); x.set_defaults(func=cmd_naukri_login)
     x = ns.add_parser("inspect"); x.set_defaults(func=cmd_naukri_inspect)

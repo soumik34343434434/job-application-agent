@@ -1,9 +1,10 @@
 import sqlite3
+import os
 from pathlib import Path
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-DB_PATH = Path(__file__).resolve().parents[1] / "data" / "applications.db"
+DB_PATH = Path(os.getenv("JOB_AGENT_DB_PATH", str(Path(__file__).resolve().parents[1] / "data" / "applications.db"))).expanduser()
 IST = ZoneInfo("Asia/Kolkata")
 
 
