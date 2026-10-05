@@ -268,6 +268,10 @@ class NaukriAgent:
             self.browser = self._pw.chromium.launch(
                 headless=self.headless,
                 slow_mo=self.slow_mo,
+                # Naukri's login host has intermittently triggered Chromium's
+                # browser-only HTTP/2 protocol error on hosted Linux runners.
+                # Keep HTTP/2 disabled for this isolated job-agent browser.
+                args=["--disable-http2"],
             )
             self.context = self.browser.new_context(
                 storage_state=str(state_path),
