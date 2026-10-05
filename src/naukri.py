@@ -384,27 +384,39 @@ class NaukriAgent:
         input()
 
     def is_logged_in(self) -> bool:
-        """Use an authenticated jobseeker route as the primary session check."""
-        try:
-            current_url = self.page.url
-            self.page.goto(
-                "https://www.naukri.com/mnjuser/profile",
-                wait_until="domcontentloaded",
-                timeout=15000,
-            )
-            self.page.wait_for_timeout(1000)
+        """Verify an authenticated Naukri session from the jobseeker homepage.
 
-            url = self.page.url.lower()
+        Do not treat a /mnjuser URL alone as proof of authentication: cloud
+        browsers can receive an error document while the URL remains unchanged.
+        """
+        try:
+            current_url = (self.page.url or "").lower()
+            if "naukri.com" not in current_url or "mnjuser/homepage" not in current_url:
+                self.page.goto(
+                    NAUKRI_HOME,
+                    wait_until="domcontentloaded",
+                    timeout=15000,
+                )
+                self.page.wait_for_timeout(1000)
+
+            url = (self.page.url or "").lower()
             text = self._body_text()
 
-            # A redirect to Naukri login is the strongest unauthenticated signal.
-            if "/nlogin/" in url or "/login" in url and "naukri.com" in url:
+            # Explicit login/registration routes mean unauthenticated.
+            if "/nlogin/" in url or ("/login" in url and "naukri.com" in url):
                 return False
 
-            # Naukri's jobseeker area is under /mnjuser; reaching it without a
-            # login redirect is stronger evidence than generic homepage labels.
-            if "/mnjuser/" in url:
-                return True
+            # Browser/network error pages must never count as authentication.
+            error_markers = (
+                "this site can’t be reached",
+                "this site can't be reached",
+                "err_http2_protocol_error",
+                "err_connection",
+                "temporarily down",
+                "webpage might be temporarily down",
+            )
+            if any(marker in text for marker in error_markers):
+                return False
 
             authenticated_markers = (
                 "my naukri",
@@ -412,11 +424,15 @@ class NaukriAgent:
                 "view profile",
                 "logout",
                 "sign out",
+                "profile completeness",
             )
-            return any(marker in text for marker in authenticated_markers)
+            if "mnjuser/homepage" in url and any(marker in text for marker in authenticated_markers):
+                return True
+
+            # A generic public homepage without authenticated markers is not enough.
+            return False
         except Exception:
             return False
-
 
     def open_home(self, interactive: bool = True):
         try:
