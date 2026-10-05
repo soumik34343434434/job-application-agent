@@ -163,7 +163,7 @@ def test_naukri_live_search_extract_and_score(tmp_path):
         agent.wait_for_human = no_human_takeover
 
         details = []
-        for card_job in jobs[:3]:
+        for card_job in jobs[:10]:
             try:
                 detail = agent._extract_job_detail(card_job.url)
             except HumanActionRequired:
@@ -186,15 +186,27 @@ def test_naukri_live_search_extract_and_score(tmp_path):
                     "matched": scored.matched,
                     "penalties": scored.penalties,
                     "reasons": scored.reasons,
+                    "apply_surface": agent._apply_surface_state(),
                 }
             )
 
         if not details:
             pytest.fail("Found real job links, but could not extract authoritative job details.")
 
-        # Safe live application-form regression: enter one real Naukri listing,
-        # click Apply, fill verified common fields, and stop before submit.
-        candidate = next((item for item in details if int(item["score"]) >= 70), details[0])
+        # Safe live application-form regression: exercise a real INTERNAL Naukri
+        # Apply surface and stop before any final submission.
+        candidate = next(
+            (
+                item for item in details
+                if item["apply_surface"] == "INTERNAL" and int(item["score"]) >= 70
+            ),
+            None,
+        )
+        if candidate is None:
+            pytest.fail(
+                "No score>=70 job with an INTERNAL Naukri Apply surface was found "
+                "in the first 10 live results."
+            )
         from src.db import add_job
 
         full_detail = agent._extract_job_detail(candidate["url"])
