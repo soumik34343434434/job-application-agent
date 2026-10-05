@@ -1,0 +1,14 @@
+[Unit]
+Description=Localhost-only VNC access to the agent virtual display
+After=job-application-agent-display.service
+Wants=job-application-agent-display.service
+Requires=job-application-agent-display.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/x11vnc -display :99 -localhost -forever -shared -rfbport 5900 -rfbauth %h/.vnc/passwd
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
