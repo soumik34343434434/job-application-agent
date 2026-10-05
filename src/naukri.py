@@ -335,7 +335,7 @@ class NaukriAgent:
         # ephemeral browser. The workflow encrypts this file immediately after
         # the run and removes the plaintext copy.
         state_path = getattr(self, "_ci_storage_state_path", None)
-        if state_path is not None and self.context is not None:
+        if state_path is not None and self.context is not None and self._session_ready:
             try:
                 state_path.parent.mkdir(parents=True, exist_ok=True)
                 self.context.storage_state(path=str(state_path))
