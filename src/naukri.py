@@ -81,11 +81,38 @@ DEFAULT_QUERIES = [
 ]
 
 # Human-friendly group names can map to Naukri's actual designation labels.
-# For SOC, only the numbered L2 designation is currently recognized by Naukri's
-# autocomplete; the generic SOC Analyst role is intentionally not included.
+# For SOC, Naukri currently exposes the L2-style numbered designation.
 ROLE_VARIANTS = {
-    "SOC Analyst L2 L3": ["SOC Analyst 2", "SOC Analyst 3"],
+    "SOC Analyst L2 L3": ["SOC Analyst 2"],
 }
+
+# Valuable security concepts/technologies that may not exist as exact Naukri
+# designation suggestions. These are searched as free-text keywords, then the
+# resulting JDs are scored against the candidate profile. They are deliberately
+# kept separate from designation validation so an absent designation is not
+# mistaken for an absent skill.
+SKILL_QUERIES = [
+    "Vulnerability Assessment",
+    "Vulnerability Remediation",
+    "Security Vulnerability",
+    "Qualys",
+    "IAM",
+    "Identity Access Management",
+    "Okta",
+    "Identity Security",
+    "Access Management",
+    "Endpoint Security",
+    "Incident Response",
+    "Microsoft Defender",
+    "Carbon Black",
+    "ThreatLocker",
+    "Mimecast",
+    "Netskope",
+    "Cloudflare",
+    "Cortex XDR",
+    "Threat Hunting",
+    "Security Automation",
+]
 
 # Naukri should receive all preferred locations in the same search field too.
 PREFERRED_LOCATIONS = [
@@ -774,7 +801,12 @@ class NaukriAgent:
         except Exception:
             return False, []
 
-    def _fill_search_form(self, query: str, location: str) -> bool:
+    def _fill_search_form(
+        self,
+        query: str,
+        location: str,
+        validate_role: bool = True,
+    ) -> bool:
         # is_logged_in() intentionally checks the authenticated profile route.
         # Always return to the Naukri homepage before interacting with the header
         # search form; otherwise the live regression can start on /mnjuser/profile,
@@ -840,13 +872,14 @@ class NaukriAgent:
             keyword.fill(query)
             self.page.wait_for_timeout(700)
 
-            # Naukri autocomplete is the source of truth for whether a requested
-            # role phrase exists. Select the exact suggestion; never search a
-            # phrase merely because Naukri accepts the raw text.
-            if not self._select_exact_keyword_suggestion(query):
-                self._last_role_recognized = False
-                return False
-            self._last_role_recognized = True
+            # Role searches use Naukri autocomplete as the source of truth.
+            # Skill searches intentionally bypass designation validation because
+            # the term may be a technology/concept rather than a job title.
+            if validate_role:
+                if not self._select_exact_keyword_suggestion(query):
+                    self._last_role_recognized = False
+                    return False
+                self._last_role_recognized = True
 
             self.page.wait_for_timeout(250)
 
@@ -1023,6 +1056,7 @@ class NaukriAgent:
         query: str,
         location: str = "",
         interactive: bool = True,
+        validate_role: bool = True,
     ) -> list[FoundJob]:
         self.ensure_logged_in(interactive=interactive)
         try:
@@ -1032,9 +1066,9 @@ class NaukriAgent:
                 raise
         self.page.wait_for_timeout(1200)
 
-        searched = self._fill_search_form(query, location)
+        searched = self._fill_search_form(query, location, validate_role=validate_role)
 
-        if not searched and self._last_role_recognized is False:
+        if validate_role and not searched and self._last_role_recognized is False:
             raise RoleNotRecognized(
                 f"Naukri autocomplete has no exact role suggestion for: {query}"
             )
@@ -1047,7 +1081,11 @@ class NaukriAgent:
                 self.page.wait_for_timeout(1800)
             except Exception:
                 pass
-            searched = self._fill_search_form(query, location)
+            searched = self._fill_search_form(
+                query,
+                location,
+                validate_role=validate_role,
+            )
 
         if not searched:
             raise RuntimeError(
@@ -1588,32 +1626,44 @@ class NaukriAgent:
         return added
 
     def scan_default(self, max_queries: int = 30, per_query: int = 12) -> list[FoundJob]:
-        """Validate and search each role phrase, using all locations in one field.
-
-        Naukri autocomplete is checked before each search. A role is searched only
-        when Naukri exposes that exact role/designation suggestion. This prevents
-        invented phrases such as ``SOC Analyst L2 L3`` from being treated as real
-        Naukri role names when the UI actually offers different options.
-        """
+        """Discover jobs from recognized designations plus security skill keywords."""
         roles = DEFAULT_QUERIES[:max_queries]
         combined_location = ", ".join(PREFERRED_LOCATIONS)
         all_found: list[FoundJob] = []
         seen = set()
 
+        def collect(found_jobs: list[FoundJob], source: str):
+            selected = 0
+            for job in found_jobs[:per_query]:
+                key = job.url.split("?")[0]
+                if key in seen:
+                    continue
+                seen.add(key)
+                all_found.append(job)
+                selected += 1
+            print(
+                f"[scan] {source} results={len(found_jobs)} selected={selected} total_unique={len(all_found)}",
+                flush=True,
+            )
+
         print(f"[scan] role_checks={len(roles)}", flush=True)
+        print(f"[scan] skill_checks={len(SKILL_QUERIES)}", flush=True)
         print(f"[scan] locations={combined_location!r}", flush=True)
 
+        # A. Designation discovery: only search roles Naukri recognizes in its
+        # autocomplete. Variants can map a human-friendly group to a canonical
+        # Naukri designation (for example SOC Analyst L2/L3 -> SOC Analyst 2).
         for index, role in enumerate(roles, start=1):
             variants = ROLE_VARIANTS.get(role, [role])
             for variant_index, search_role in enumerate(variants, start=1):
                 print(
-                    f"[scan] role {index}/{len(roles)} variant {variant_index}/{len(variants)}: {search_role!r}",
+                    f"[scan] ROLE {index}/{len(roles)} variant {variant_index}/{len(variants)}: {search_role!r}",
                     flush=True,
                 )
                 try:
-                    found_jobs = self.search(search_role, combined_location, interactive=False)
+                    found_jobs = self.search(search_role, combined_location, interactive=False, validate_role=True)
                 except RoleNotRecognized:
-                    print(f"[scan] SKIP_UNRECOGNIZED_ROLE: {search_role!r}", flush=True)
+                    print(f"[scan] NOT_A_DESIGNATION: {search_role!r}", flush=True)
                     continue
                 except HumanActionRequired:
                     print(f"[scan] SKIP_VERIFICATION: {search_role!r}", flush=True)
@@ -1621,22 +1671,25 @@ class NaukriAgent:
                 except RuntimeError as exc:
                     print(f"[scan] SEARCH_ERROR: {search_role!r}: {exc}", flush=True)
                     continue
+                collect(found_jobs, f"ROLE {search_role!r}")
 
-                selected = 0
-                for job in found_jobs[:per_query]:
-                    key = job.url.split("?")[0]
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    all_found.append(job)
-                    selected += 1
+        # B. Skill/technology discovery: these are not required to be job titles.
+        # Naukri receives them as raw keywords and the resulting JDs are still
+        # subjected to the same full scoring, location, experience, salary,
+        # dedupe, and application gates.
+        for index, skill in enumerate(SKILL_QUERIES, start=1):
+            print(f"[scan] SKILL {index}/{len(SKILL_QUERIES)}: {skill!r}", flush=True)
+            try:
+                found_jobs = self.search(skill, combined_location, interactive=False, validate_role=False)
+            except HumanActionRequired:
+                print(f"[scan] SKIP_VERIFICATION: skill {skill!r}", flush=True)
+                continue
+            except RuntimeError as exc:
+                print(f"[scan] SEARCH_ERROR: skill {skill!r}: {exc}", flush=True)
+                continue
+            collect(found_jobs, f"SKILL {skill!r}")
 
-                print(
-                    f"[scan] VALID_ROLE results={len(found_jobs)} selected={selected} total_unique={len(all_found)}",
-                    flush=True,
-                )
-
-        print(f"[scan] ingesting={len(all_found)} unique role-search candidates", flush=True)
+        print(f"[scan] ingesting={len(all_found)} unique candidates from roles + skills", flush=True)
         return self.ingest(all_found)
 
     def _all_contexts(self):
