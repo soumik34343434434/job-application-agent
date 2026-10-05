@@ -1,0 +1,130 @@
+name: Unattended Naukri Agent
+
+on:
+  schedule:
+    # GitHub cron is UTC. 04:30 UTC = 10:00 IST.
+    - cron: "30 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: naukri-unattended-main
+  cancel-in-progress: false
+
+jobs:
+  scheduled-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+          python -m playwright install --with-deps chromium
+
+      - name: Restore runtime state
+        env:
+          NAUKRI_STATE_KEY: ${{ secrets.NAUKRI_STATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${NAUKRI_STATE_KEY}" || {
+            echo "NAUKRI_STATE_KEY secret is not configured."
+            echo "Bootstrap the authenticated Naukri storage state first."
+            exit 1
+          }
+          test -f runtime/naukri.storage-state.enc || {
+            echo "runtime/naukri.storage-state.enc is missing."
+            echo "Bootstrap the authenticated Naukri storage state first."
+            exit 1
+          }
+
+          mkdir -p runtime outbox/browser_artifacts
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
+            -pass env:NAUKRI_STATE_KEY \
+            -in runtime/naukri.storage-state.enc \
+            -out runtime/naukri.storage-state.json
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path("runtime/naukri.storage-state.json")
+          state = json.loads(p.read_text(encoding="utf-8"))
+          assert isinstance(state, dict) and isinstance(state.get("cookies"), list)
+          print(f"Restored browser state: {len(state['cookies'])} cookies")
+          PY
+
+      - name: Initialize persistent database
+        env:
+          JOB_AGENT_DB_PATH: ${{ github.workspace }}/runtime/applications.db
+          TZ: Asia/Kolkata
+        run: python -m src.cli init-db
+
+      - name: Run due-check + Naukri agent
+        env:
+          PYTHONPATH: .
+          JOB_AGENT_DB_PATH: ${{ github.workspace }}/runtime/applications.db
+          NAUKRI_STORAGE_STATE_PATH: ${{ github.workspace }}/runtime/naukri.storage-state.json
+          TZ: Asia/Kolkata
+          # Real submissions require BOTH profile.json auto_submit=true and
+          # repository variable UNATTENDED_LIVE_SUBMISSION=true.
+          UNATTENDED_LIVE_SUBMISSION: ${{ vars.UNATTENDED_LIVE_SUBMISSION }}
+        run: |
+          python -m src.cli naukri scheduled-run \
+            --scan-queries 30 \
+            --per-query 20 \
+            --limit 5 \
+            --slow-mo 0
+
+      - name: Re-encrypt refreshed Naukri state
+        if: always()
+        env:
+          NAUKRI_STATE_KEY: ${{ secrets.NAUKRI_STATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -f runtime/naukri.storage-state.json ]; then
+            test -n "${NAUKRI_STATE_KEY}" || exit 1
+            openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt \
+              -pass env:NAUKRI_STATE_KEY \
+              -in runtime/naukri.storage-state.json \
+              -out runtime/naukri.storage-state.enc.new
+            mv runtime/naukri.storage-state.enc.new runtime/naukri.storage-state.enc
+            rm -f runtime/naukri.storage-state.json
+          fi
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: naukri-unattended-${{ github.run_id }}
+          path: |
+            outbox/browser_artifacts/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Persist DB + encrypted browser state
+        if: always()
+        run: |
+          set -euo pipefail
+          rm -f runtime/naukri.storage-state.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add runtime/applications.db runtime/naukri.storage-state.enc
+          if git diff --cached --quiet; then
+            echo "No persistent runtime changes."
+            exit 0
+          fi
+          git commit -m "chore: persist unattended agent state [skip ci]"
+          git push origin HEAD:main
