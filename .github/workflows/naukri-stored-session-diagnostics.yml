@@ -1,0 +1,63 @@
+name: Naukri Stored Session Diagnostics
+
+on:
+  push:
+    branches:
+      - fix/naukri-ci-headed-browser
+
+permissions:
+  contents: read
+
+jobs:
+  session:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install browser
+        run: |
+          python -m pip install --quiet playwright
+          python -m playwright install --with-deps chromium >/dev/null 2>&1
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y xvfb >/dev/null
+      - name: Restore session
+        env:
+          NAUKRI_STATE_KEY: ${{ secrets.NAUKRI_STATE_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p runtime
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:NAUKRI_STATE_KEY -in runtime/naukri.storage-state.enc -out runtime/naukri.storage-state.json
+      - name: Inspect stored session
+        env:
+          NAUKRI_STORAGE_STATE_PATH: ${{ github.workspace }}/runtime/naukri.storage-state.json
+        run: |
+          Xvfb :99 -screen 0 1920x1080x24 -ac >/tmp/naukri-xvfb.log 2>&1 &
+          export DISPLAY=:99
+          python - <<'PY'
+          import json, os
+          from playwright.sync_api import sync_playwright
+          state=json.load(open(os.environ['NAUKRI_STORAGE_STATE_PATH']))
+          print('COOKIE_COUNT=',len(state.get('cookies',[])))
+          with sync_playwright() as p:
+              b=p.chromium.launch(headless=False)
+              ctx=b.new_context(storage_state=os.environ['NAUKRI_STORAGE_STATE_PATH'])
+              page=ctx.new_page()
+              r=page.goto('https://www.naukri.com/',wait_until='domcontentloaded',timeout=20000)
+              print('STATUS=',r.status if r else None)
+              print('URL=',page.url)
+              print('TITLE=',page.title())
+              body=page.locator('body').inner_text(timeout=5000).replace('\n',' ')
+              print('BODY=',body[:1000])
+              print('HAS_MY_NAUKRI=', 'my naukri' in body.lower())
+              print('HAS_PROFILE=', 'my profile' in body.lower() or 'view profile' in body.lower())
+              print('HAS_LOGIN=', 'login' in body.lower() or 'sign in' in body.lower())
+              b.close()
+          PY
+      - name: Remove plaintext state
+        if: always()
+        run: rm -f runtime/naukri.storage-state.json
