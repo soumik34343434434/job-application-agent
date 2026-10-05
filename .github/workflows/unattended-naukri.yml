@@ -84,6 +84,10 @@ jobs:
           JOB_AGENT_DB_PATH: ${{ github.workspace }}/runtime/applications.db
           NAUKRI_STORAGE_STATE_PATH: ${{ github.workspace }}/runtime/naukri.storage-state.json
           TZ: Asia/Kolkata
+          # Fresh-machine fallback: these are optional. When present, the agent
+          # can establish a new Naukri session instead of replaying copied state.
+          NAUKRI_EMAIL: ${{ secrets.NAUKRI_EMAIL }}
+          NAUKRI_PASSWORD: ${{ secrets.NAUKRI_PASSWORD }}
           # Real submissions require BOTH profile.json auto_submit=true and
           # repository variable UNATTENDED_LIVE_SUBMISSION=true.
           UNATTENDED_LIVE_SUBMISSION: ${{ vars.UNATTENDED_LIVE_SUBMISSION }}
