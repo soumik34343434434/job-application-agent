@@ -1,4 +1,5 @@
 import argparse
+import os
 import json
 import re
 from datetime import datetime, timezone, timedelta
@@ -84,6 +85,18 @@ def cmd_naukri_create_account(args):
     from .naukri import NaukriAgent
     with NaukriAgent(headless=False, slow_mo=args.slow_mo) as agent:
         print(agent.create_account())
+
+
+def cmd_naukri_export_storage_state(args):
+    """Export the authenticated Naukri browser state for CI bootstrap."""
+    from .naukri import NaukriAgent
+
+    output = Path(args.output).expanduser()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with NaukriAgent(headless=False, slow_mo=0) as agent:
+        agent.ensure_logged_in(interactive=True)
+        agent.context.storage_state(path=str(output))
+    print(f"Exported Naukri storage state to {output}")
 
 
 def cmd_naukri_setup_browser(args):
@@ -368,6 +381,7 @@ def main():
     ns = naukri.add_subparsers(required=True)
     x = ns.add_parser("setup-credentials"); x.set_defaults(func=cmd_naukri_setup)
     x = ns.add_parser("create-account"); x.add_argument("--slow-mo", type=int, default=150); x.set_defaults(func=cmd_naukri_create_account)
+    x = ns.add_parser("export-storage-state"); x.add_argument("--output", default="runtime/naukri.storage-state.json"); x.set_defaults(func=cmd_naukri_export_storage_state)
     x = ns.add_parser("setup-browser"); x.set_defaults(func=cmd_naukri_setup_browser)
     x = ns.add_parser("login"); x.add_argument("--slow-mo", type=int, default=150); x.set_defaults(func=cmd_naukri_login)
     x = ns.add_parser("inspect"); x.set_defaults(func=cmd_naukri_inspect)
