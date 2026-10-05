@@ -2136,6 +2136,7 @@ class NaukriAgent:
 
         # Canonicalize roles/locations first so the browser still follows the
         # user's autocomplete workflow and keeps an auditable mapping artifact.
+        ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
         report_path = ARTIFACT_DIR / "latest_search_autocomplete_report.json"
         role_report = None
         location_report = None
