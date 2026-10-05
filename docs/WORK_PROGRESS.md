@@ -36,23 +36,26 @@ This file is the visible audit trail for the Naukri agent build.
 
 ## Validation status
 - Python source compilation: **passing locally**.
-- Unit/backtest suite: **16 passed** in the targeted regression set.
-- Live authenticated Naukri search: **passing**; a live `Vulnerability Management` role search returned **20 real job cards**; the new OR-style scan path completed its smoke run without submission.
-- Database scorer backtest: **169 stored job rows** recomputed with the improved scorer; **18** scored >=70 and **6** scored >=85 at backtest time.
-- Backtest artifact: `outbox/browser_artifacts/model_backtest_report.json`.
-- Internal Naukri application-form path: **passing in prepare-only mode**; a real Apply form reached `READY_TO_SUBMIT`.
-- External application routing: **passing**; a real employer-hosted listing returned `EXTERNAL_APPLICATION`.
+- Unit/backtest suite: **23 passed** in the current targeted regression set.
+- Live authenticated Naukri session: **passing**; dedicated Chrome reports an authenticated jobseeker session.
+- Live Apply-surface classification: **passing** on real Naukri pages. A current OpenLM listing exposes Naukri's visible `#apply-button` and is classified `INTERNAL`; current Riskman, Travarsa, and Bizoforce listings expose `Apply on company site` and are classified `EXTERNAL`.
+- Unknown Apply surfaces now fail closed as `APPLY_SURFACE_UNKNOWN` with bounded diagnostics rather than `APPLY_BUTTON_NOT_FOUND`.
+- Internal Apply click failures now fail closed as `APPLY_CLICK_FAILED` with diagnostics.
+- Sensitive eligibility/work-authorization questions remain hard stops for unattended submission.
+- Required-field detection and confirmation-state detection remain covered by synthetic browser regression tests.
 - Submitted today during validation: **0**.
-- Real internal `85+` auto-submit with positive confirmation: **not yet proven**.
-- Daily unattended application scheduling: **not enabled**.
+- Scheduled profile remains **`auto_submit=false`**.
+- Real internal application submission with positive confirmation: **not performed yet**; the live validation intentionally stopped before clicking a real one-click Apply control.
 
 ## Next gates
-1. Run a targeted internal Naukri application with a score of at least 85.
-2. Verify all required/common fields are populated correctly.
-3. Confirm no unknown/sensitive eligibility question is present.
-4. Submit once under the existing safety gates and positively detect the success state.
-5. Confirm the database records `SUBMITTED` and the 10/day cap remains enforced.
-6. Then enable unattended daily autopilot.
+1. Keep live Apply classification stable across more current Naukri listings.
+2. Add a dedicated safe form-entry probe for an internal application flow that is known to require a form rather than one-click submission.
+3. Verify all required/common fields are populated correctly in that form.
+4. Confirm no unknown/sensitive eligibility question is present.
+5. Only then enable a controlled real submission test and require positive confirmation before recording `SUBMITTED`.
+6. Confirm the database records `SUBMITTED` and the 10/day cap remains enforced.
+7. Then enable unattended scheduled applications.
+
 
 ## Audit rule
 No daily unattended application scheduling is enabled until the internal submission + positive confirmation gate passes.
