@@ -1414,7 +1414,14 @@ class NaukriAgent:
         locations = PREFERRED_LOCATIONS[:4]
         for query in DEFAULT_QUERIES[:max_queries]:
             for location in locations:
-                for job in self.search(query, location):
+                try:
+                    found_jobs = self.search(query, location)
+                except HumanActionRequired:
+                    # Unattended discovery must not stall on a verification gate
+                    # for one query/location. Skip that slice and keep scanning;
+                    # direct application execution still stops safely for human action.
+                    continue
+                for job in found_jobs:
                     if job.url not in seen:
                         seen.add(job.url)
                         all_found.append(job)
