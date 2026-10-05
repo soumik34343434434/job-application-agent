@@ -106,3 +106,61 @@ def test_application_required_field_detection():
         assert "email" not in lowered
         assert "mobile" not in lowered
         browser.close()
+
+
+
+def _agent_for_html(page, html):
+    page.set_content(html)
+    agent = NaukriAgent(headless=True, slow_mo=0)
+    agent.page = page
+    agent.context = page.context
+    return agent
+
+
+def test_apply_surface_classifies_internal_control_without_clicking():
+    from playwright.sync_api import sync_playwright
+
+    html = '<main><button aria-label="Apply">Apply</button></main>'
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True, channel="chrome")
+        page = browser.new_page()
+        agent = _agent_for_html(page, html)
+        assert agent._apply_surface_state() == "INTERNAL"
+        browser.close()
+
+
+def test_apply_surface_classifies_external_flow():
+    from playwright.sync_api import sync_playwright
+
+    html = '<main><a href="https://careers.example.com/job/1">Apply on company site</a></main>'
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True, channel="chrome")
+        page = browser.new_page()
+        agent = _agent_for_html(page, html)
+        assert agent._apply_surface_state() == "EXTERNAL"
+        browser.close()
+
+
+def test_apply_surface_classifies_already_applied_before_click():
+    from playwright.sync_api import sync_playwright
+
+    html = '<main><h1>You have already applied</h1><button>Apply</button></main>'
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True, channel="chrome")
+        page = browser.new_page()
+        agent = _agent_for_html(page, html)
+        assert agent._apply_surface_state() == "ALREADY_APPLIED"
+        browser.close()
+
+
+def test_apply_surface_unknown_never_clicks_unrecognized_control():
+    from playwright.sync_api import sync_playwright
+
+    html = '<main><button aria-label="Save job">Save</button></main>'
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True, channel="chrome")
+        page = browser.new_page()
+        agent = _agent_for_html(page, html)
+        assert agent._apply_surface_state() == "UNKNOWN"
+        assert agent._safe_click_apply() is False
+        browser.close()
