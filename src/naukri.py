@@ -249,6 +249,35 @@ class NaukriAgent:
 
     def __enter__(self):
         ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+
+        # GitHub Actions cannot safely reuse the macOS Chrome profile because
+        # Chrome protects cookies with the local OS keychain. In CI we instead
+        # restore a Playwright storage-state JSON containing only the Naukri web
+        # session, then save the refreshed state back to the same file on exit.
+        storage_state_path = os.getenv("NAUKRI_STORAGE_STATE_PATH")
+        if storage_state_path:
+            state_path = Path(storage_state_path).expanduser()
+            if not state_path.exists():
+                raise RuntimeError(
+                    f"Naukri storage state not found at {state_path}. "
+                    "Bootstrap the authenticated state on the Mac first."
+                )
+            self._ci_storage_state_path = state_path
+            self._pw = sync_playwright().start()
+            self.browser = self._pw.chromium.launch(
+                headless=self.headless,
+                slow_mo=self.slow_mo,
+            )
+            self.context = self.browser.new_context(
+                storage_state=str(state_path),
+                accept_downloads=True,
+            )
+            self.page = self.context.new_page()
+            self.page.goto(NAUKRI_HOME, wait_until="domcontentloaded")
+            self.page.wait_for_timeout(1200)
+            self.page.set_default_timeout(12000)
+            return self
+
         AGENT_BROWSER_DIR.mkdir(parents=True, exist_ok=True)
 
         # A single dedicated Chrome owns the profile. We attach to that existing
@@ -302,8 +331,23 @@ class NaukriAgent:
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        # Detach Playwright only. The dedicated Chrome stays running and keeps
-        # owning the profile; this removes the need for manual close/reopen steps.
+        # In CI, persist the refreshed Naukri storage state before closing the
+        # ephemeral browser. The workflow encrypts this file immediately after
+        # the run and removes the plaintext copy.
+        state_path = getattr(self, "_ci_storage_state_path", None)
+        if state_path is not None and self.context is not None:
+            try:
+                state_path.parent.mkdir(parents=True, exist_ok=True)
+                self.context.storage_state(path=str(state_path))
+            except Exception as exc:
+                print(f"Warning: could not persist Naukri storage state: {exc}", flush=True)
+
+        try:
+            if getattr(self, "browser", None) is not None and state_path is not None:
+                self.browser.close()
+        except Exception:
+            pass
+
         if self._pw:
             try:
                 self._pw.stop()
