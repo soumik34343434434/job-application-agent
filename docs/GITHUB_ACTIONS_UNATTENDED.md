@@ -98,11 +98,26 @@ UNATTENDED_LIVE_SUBMISSION=true
 
 The workflow code requires both. If either gate is missing, the scheduler runs in prepare-only mode.
 
+## Authentication on fresh cloud runners
+
+The encrypted browser state is treated as a fast session cache, not as a guaranteed portable login. Naukri can invalidate a replayed session on a different machine or network.
+
+For unattended recovery, optionally add these repository secrets:
+
+```
+NAUKRI_EMAIL
+NAUKRI_PASSWORD
+```
+
+When both are present, the agent first tries the restored session and then falls back to a fresh Naukri email/password login. Password values are never written to the repository, database, diagnostics, or logs.
+
+The agent never automates Google authentication and never bypasses CAPTCHA/OTP/security verification. If Naukri asks for an OTP, additional verification, or CAPTCHA, the run fails safely.
+
+After a successful fresh login, the workflow persists the refreshed encrypted browser state for later runs.
+
 ## Session expiry
 
-The agent never automates Google authentication and never bypasses CAPTCHA/OTP/security verification. If the restored Naukri session is no longer valid, the run fails safely rather than attempting a workaround.
-
-At that point, re-authenticate the dedicated Naukri browser on the Mac, re-export the storage state, re-encrypt it, and push the new encrypted file.
+If neither the restored state nor the optional direct credentials can establish an authenticated session, the run fails safely. Refresh the dedicated Naukri session on the Mac and/or configure the optional direct-login secrets.
 
 ## Persistence model
 
