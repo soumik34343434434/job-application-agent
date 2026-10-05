@@ -384,39 +384,60 @@ class NaukriAgent:
         input()
 
     def is_logged_in(self) -> bool:
-        """Use an authenticated jobseeker route as the primary session check."""
-        try:
-            current_url = self.page.url
-            self.page.goto(
-                "https://www.naukri.com/mnjuser/profile",
-                wait_until="domcontentloaded",
-                timeout=15000,
-            )
-            self.page.wait_for_timeout(1000)
+        """Verify an authenticated Naukri session with a small transient retry.
 
-            url = self.page.url.lower()
-            text = self._body_text()
+        A self-hosted Chrome page can briefly expose a blank/error document while
+        retaining the authenticated homepage URL. Treat that as inconclusive and
+        re-navigate to the homepage before declaring the session unauthenticated.
+        """
+        error_markers = (
+            "this site can’t be reached",
+            "this site can't be reached",
+            "err_http2_protocol_error",
+            "err_connection",
+            "temporarily down",
+            "webpage might be temporarily down",
+        )
+        authenticated_markers = (
+            "my naukri",
+            "my profile",
+            "view profile",
+            "logout",
+            "sign out",
+            "profile completeness",
+        )
 
-            # A redirect to Naukri login is the strongest unauthenticated signal.
-            if "/nlogin/" in url or "/login" in url and "naukri.com" in url:
-                return False
+        for attempt in range(3):
+            try:
+                current_url = (self.page.url or "").lower()
+                url_ok = "naukri.com/mnjuser/homepage" in current_url
 
-            # Naukri's jobseeker area is under /mnjuser; reaching it without a
-            # login redirect is stronger evidence than generic homepage labels.
-            if "/mnjuser/" in url:
-                return True
+                # Refresh the authenticated homepage whenever the current page is
+                # blank, off-route, or lacks an authenticated marker. This absorbs
+                # transient SPA hydration/network races without accepting errors.
+                if not url_ok or attempt > 0:
+                    self.page.goto(
+                        NAUKRI_HOME,
+                        wait_until="domcontentloaded",
+                        timeout=15000,
+                    )
+                self.page.wait_for_timeout(800 + attempt * 700)
 
-            authenticated_markers = (
-                "my naukri",
-                "my profile",
-                "view profile",
-                "logout",
-                "sign out",
-            )
-            return any(marker in text for marker in authenticated_markers)
-        except Exception:
-            return False
+                url = (self.page.url or "").lower()
+                text = self._body_text()
 
+                if "/nlogin/" in url or ("/login" in url and "naukri.com" in url):
+                    continue
+                if any(marker in text for marker in error_markers):
+                    continue
+                if "mnjuser/homepage" in url and any(
+                    marker in text for marker in authenticated_markers
+                ):
+                    return True
+            except Exception:
+                continue
+
+        return False
 
     def open_home(self, interactive: bool = True):
         try:
@@ -586,16 +607,15 @@ class NaukriAgent:
         # class belongs to the unrelated "Search appearances" section.
         candidates = [
             # Current authenticated Naukri homepage exposes the collapsed
-            # search as a dedicated expand button. Prefer this over the older
-            # wrapper/span selectors because the span itself is not the click
-            # target in the current build.
+            # search as a dedicated expand button. Avoid broad "Search" fallbacks:
+            # those can submit a partially populated form and navigate away from
+            # the homepage while activation is still being established.
             self.page.locator("button.nI-gNb-sb__expand"),
             self.page.get_by_role("button", name=re.compile(r"^search jobs here$", re.I)),
             self.page.locator('[aria-label="Search jobs here"]'),
             self.page.locator("div.nI-gNb-sb__main"),
             self.page.locator(".nI-gNb-sb__placeholder"),
             self.page.get_by_text(re.compile(r"^search jobs here$", re.I)),
-            self.page.get_by_role("button", name=re.compile(r"^search$", re.I)),
         ]
 
         def search_controls_visible() -> bool:
@@ -2120,6 +2140,7 @@ class NaukriAgent:
 
         # Canonicalize roles/locations first so the browser still follows the
         # user's autocomplete workflow and keeps an auditable mapping artifact.
+        ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
         report_path = ARTIFACT_DIR / "latest_search_autocomplete_report.json"
         role_report = None
         location_report = None

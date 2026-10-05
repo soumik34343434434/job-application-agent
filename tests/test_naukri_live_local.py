@@ -1,8 +1,11 @@
 import json
+import re
+import shutil
 from pathlib import Path
 import pytest
 
 from src.naukri import HumanActionRequired, NaukriAgent
+from src import db
 from src.scorer import score_job
 
 
@@ -49,6 +52,7 @@ def _bind_diagnostics(agent, artifact_dir):
 def test_authenticated_naukri_browser_surface():
     """Capture the live Naukri surface without making the regression brittle."""
     artifact_dir = Path("outbox/live_runner")
+    shutil.rmtree(artifact_dir, ignore_errors=True)
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
     agent = NaukriAgent(headless=False, slow_mo=0)
@@ -110,67 +114,19 @@ def test_authenticated_naukri_browser_surface():
         diagnostics("unexpected_exception", exc)
         raise
 
-        # Safe live application-form regression: enter one real Naukri listing,
-        # click Apply, fill verified common fields, and stop before submit.
-        candidate = next((item for item in details if int(item["score"]) >= 70), details[0])
-        from src.db import add_job
-
-        full_detail = agent._extract_job_detail(candidate["url"])
-        if full_detail is None:
-            pytest.skip("Could not reopen a live job detail for the safe apply-form regression.")
-
-        scored = score_job(full_detail.title, full_detail.description, full_detail.company)
-        job_id = add_job(
-            full_detail.company,
-            full_detail.title,
-            full_detail.url,
-            full_detail.description,
-            scored.score,
-            scored.recommendation,
-        )
-        form_job = {
-            "id": job_id,
-            "title": full_detail.title,
-            "company": full_detail.company,
-            "url": full_detail.url,
-            "score": scored.score,
-        }
-
-        outcome = agent.apply_job(form_job, auto_submit=False)
-        if outcome not in {
-            "READY_TO_SUBMIT",
-            "ALREADY_APPLIED",
-            "EXTERNAL_APPLICATION",
-            "NEEDS_USER",
-        }:
-            pytest.fail(f"Unexpected safe application-form outcome: {outcome}")
-        assert outcome not in {"SUBMITTED", "SUBMITTED_UNCONFIRMED"}
-
-        (artifact_dir / "safe_apply_form.json").write_text(
-            json.dumps(
-                {
-                    "job": form_job,
-                    "outcome": outcome,
-                    "did_submit_application": False,
-                },
-                indent=2,
-                ensure_ascii=False,
-                default=str,
-            ),
-            encoding="utf-8",
-        )
-
     finally:
         agent.__exit__(None, None, None)
 
 
 @pytest.mark.naukri_live
-def test_naukri_live_search_extract_and_score():
+def test_naukri_live_search_extract_and_score(tmp_path):
     """End-to-end dry run: search -> extract -> read full JD -> score."""
     artifact_dir = Path("outbox/live_runner")
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
     agent = NaukriAgent(headless=False, slow_mo=0)
+    db.DB_PATH = tmp_path / "naukri_live.sqlite3"
+    db.init_db()
     try:
         agent.__enter__()
 
@@ -210,7 +166,7 @@ def test_naukri_live_search_extract_and_score():
         agent.wait_for_human = no_human_takeover
 
         details = []
-        for card_job in jobs[:3]:
+        for card_job in jobs[:10]:
             try:
                 detail = agent._extract_job_detail(card_job.url)
             except HumanActionRequired:
@@ -233,11 +189,117 @@ def test_naukri_live_search_extract_and_score():
                     "matched": scored.matched,
                     "penalties": scored.penalties,
                     "reasons": scored.reasons,
+                    "apply_surface": agent._apply_surface_state(),
                 }
             )
 
         if not details:
             pytest.fail("Found real job links, but could not extract authoritative job details.")
+
+        # Prefer a security-related internal Apply target from the primary
+        # query. If the live result mix contains only external flows or unrelated
+        # internal flows, use the proven security-specialist query as a fallback.
+        security_internal_present = any(
+            item["apply_surface"] == "INTERNAL"
+            and re.search(r"security|cyber|infosec|information security", item["title"], re.I)
+            for item in details
+        )
+        if not security_internal_present:
+            fallback_query = "Cyber Security Specialist"
+            if not agent._fill_search_form(fallback_query, location, validate_role=False):
+                pytest.fail("Could not fill the fallback internal-Apply Naukri search.")
+            agent._set_relevance_sort()
+            agent.page.wait_for_timeout(1200)
+            fallback_jobs = agent._extract_jobs()
+            for card_job in fallback_jobs[:5]:
+                try:
+                    detail = agent._extract_job_detail(card_job.url)
+                except HumanActionRequired:
+                    pytest.skip(
+                        "Naukri presented a security gate while opening the fallback job detail."
+                    )
+                if not detail:
+                    continue
+                scored = score_job(detail.title, detail.description, detail.company)
+                details.append(
+                    {
+                        "title": detail.title,
+                        "company": detail.company,
+                        "location": detail.location,
+                        "salary": detail.salary,
+                        "experience": detail.experience,
+                        "url": detail.url,
+                        "description_length": len(detail.description or ""),
+                        "score": scored.score,
+                        "recommendation": scored.recommendation,
+                        "matched": scored.matched,
+                        "penalties": scored.penalties,
+                        "reasons": scored.reasons,
+                        "apply_surface": agent._apply_surface_state(),
+                        "query_source": fallback_query,
+                    }
+                )
+
+        # Safe live application-target regression. We verify an actual INTERNAL
+        # Naukri Apply control but deliberately do not click it: Naukri's current
+        # one-click Apply can itself submit the application.
+        internal = [
+            item
+            for item in details
+            if item["apply_surface"] == "INTERNAL"
+            and re.search(r"security|cyber|infosec|information security", item["title"], re.I)
+        ]
+        if not internal:
+            pytest.fail(
+                "No security-related INTERNAL Naukri Apply surface was found in the live canary queries."
+            )
+        candidate = max(internal, key=lambda item: int(item["score"]))
+        from src.db import add_job
+
+        full_detail = agent._extract_job_detail(candidate["url"])
+        if full_detail is None:
+            pytest.skip("Could not reopen a live job detail for the safe apply-form regression.")
+
+        scored = score_job(full_detail.title, full_detail.description, full_detail.company)
+        job_id = add_job(
+            full_detail.company,
+            full_detail.title,
+            full_detail.url,
+            full_detail.description,
+            scored.score,
+            scored.recommendation,
+        )
+        form_job = {
+            "id": job_id,
+            "title": full_detail.title,
+            "company": full_detail.company,
+            "url": full_detail.url,
+            "score": scored.score,
+        }
+
+        outcome = agent.apply_job(form_job, auto_submit=False)
+        if outcome not in {
+            "READY_TO_APPLY",
+            "ALREADY_APPLIED",
+            "EXTERNAL_APPLICATION",
+            "NEEDS_USER",
+        }:
+            pytest.fail(f"Unexpected prepare-only application outcome: {outcome}")
+        assert outcome not in {"SUBMITTED", "SUBMITTED_UNCONFIRMED"}
+
+        (artifact_dir / "safe_apply_form.json").write_text(
+            json.dumps(
+                {
+                    "job": form_job,
+                    "outcome": outcome,
+                    "did_submit_application": False,
+                },
+                indent=2,
+                ensure_ascii=False,
+                default=str,
+            ),
+            encoding="utf-8",
+        )
 
         (artifact_dir / "dry_run_pipeline.json").write_text(
             json.dumps(
