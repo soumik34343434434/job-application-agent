@@ -9,3 +9,6 @@ data/*.db
 data/*.sqlite
 .browser/
 outbox/browser_artifacts/
+
+# CI runtime state: plaintext Naukri state is never committed.
+runtime/naukri.storage-state.json
