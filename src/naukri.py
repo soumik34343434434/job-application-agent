@@ -470,7 +470,10 @@ class NaukriAgent:
                 continue
         return False
 
-    def ensure_logged_in(self, interactive: bool = True):
+    def ensure_logged_in(self, interactive: bool | None = None):
+        if interactive is None:
+            interactive = not bool(os.getenv("GITHUB_ACTIONS"))
+
         # Reuse the current authenticated Naukri page when possible. Repeated
         # SPA homepage navigations during a multi-search scan can leave the CDP
         # session waiting even though the search controls are already mounted.
