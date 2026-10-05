@@ -116,7 +116,7 @@ def test_authenticated_naukri_browser_surface():
 
 
 @pytest.mark.naukri_live
-def test_naukri_live_search_extract_and_score():
+def test_naukri_live_search_extract_and_score(tmp_path):
     """End-to-end dry run: search -> extract -> read full JD -> score."""
     artifact_dir = Path("outbox/live_runner")
     artifact_dir.mkdir(parents=True, exist_ok=True)
