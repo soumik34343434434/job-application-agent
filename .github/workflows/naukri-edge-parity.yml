@@ -1,0 +1,32 @@
+name: Naukri Edge Parity Probe
+
+on:
+  push:
+    branches:
+      - diag/naukri-edge-probe
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Exact Python urllib parity test
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import socket, urllib.request
+          print("DNS=", socket.gethostbyname_ex("www.naukri.com"))
+          req=urllib.request.Request("https://www.naukri.com/", headers={"User-Agent":"Mozilla/5.0"})
+          try:
+              with urllib.request.urlopen(req, timeout=20) as r:
+                  print("STATUS=", r.status)
+                  print("FINAL_URL=", r.geturl())
+                  print("SERVER=", r.headers.get("server"))
+                  print("CONTENT_TYPE=", r.headers.get("content-type"))
+                  print("BODY=", r.read(500).decode("utf-8","ignore").replace("\n"," "))
+          except Exception as e:
+              print("ERROR=", repr(e))
+          PY
