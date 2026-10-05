@@ -22,12 +22,22 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
 if ! command -v google-chrome >/dev/null 2>&1 && \
    ! command -v google-chrome-stable >/dev/null 2>&1 && \
    ! command -v chromium >/dev/null 2>&1 && \
-   ! command -v chromium-browser >/dev/null 2>&1; then
-  echo "==> Installing Google Chrome"
-  tmp_deb="$(mktemp --suffix=.deb)"
-  trap 'rm -f "$tmp_deb"' EXIT
-  curl -fsSL -o "$tmp_deb" https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-  sudo apt-get install -y "$tmp_deb"
+   ! command -v chromium-browser >/dev/null 2>&1 && \
+   ! [ -x /snap/bin/chromium ]; then
+  ARCH="$(dpkg --print-architecture 2>/dev/null || true)"
+  if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "armhf" ]; then
+    echo "==> Installing ARM-compatible Chromium"
+    if ! command -v snap >/dev/null 2>&1; then
+      sudo apt-get install -y snapd
+    fi
+    sudo snap install chromium
+  else
+    echo "==> Installing Google Chrome"
+    tmp_deb="$(mktemp --suffix=.deb)"
+    trap 'rm -f "$tmp_deb"' EXIT
+    curl -fsSL -o "$tmp_deb" https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+    sudo apt-get install -y "$tmp_deb"
+  fi
 fi
 
 echo "==> Preparing Python environment"
