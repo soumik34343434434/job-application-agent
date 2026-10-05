@@ -100,6 +100,7 @@ RELATED_DOMAIN_TERMS = {
 TARGET_ROLE_FAMILIES = {
     "security_engineering": [
         "cybersecurity engineer",
+        "cyber security engineer",
         "security engineer",
         "security operations engineer",
         "security platform engineer",
@@ -110,19 +111,28 @@ TARGET_ROLE_FAMILIES = {
         "endpoint engineer",
     ],
     "vulnerability_management": [
+        "vulnerability management",
+        "vulnerability management analyst",
+        "vulnerability management specialist",
         "vulnerability management engineer",
         "vulnerability engineer",
         "vulnerability analyst",
         "vulnerability assessment analyst",
         "vulnerability remediation analyst",
+        "security vulnerability analyst",
+        "vulnerability assessment",
     ],
     "iam_identity": [
         "iam engineer",
         "iam analyst",
+        "iam security analyst",
+        "identity and access management analyst",
         "identity engineer",
         "identity security analyst",
         "access management analyst",
+        "identity and access management",
         "okta engineer",
+        "okta administrator",
     ],
     "detection_response": [
         "detection engineer",
@@ -140,8 +150,10 @@ TARGET_ROLE_FAMILIES = {
     ],
     "security_analyst": [
         "cybersecurity analyst",
+        "cyber security analyst",
         "security analyst",
         "security operations analyst",
+        "soc analyst 2",
     ],
 }
 
@@ -311,6 +323,22 @@ def score_job(title: str, description: str, company: str = "") -> ScoreResult:
     if not role_hits and not verified_groups and not related_groups:
         score -= 10
         reasons.append("Little evidence of alignment with the candidate's security role families or skill domains.")
+
+    # Compensation fit is a secondary signal: the hard minimum CTC filter remains
+    # in NaukriAgent, while this adds preference for the user's 8-16 LPA target band.
+    salary_blob = normalize(blob)
+    salary_numbers = [
+        float(x.replace(",", ""))
+        for x in re.findall(r"(?:₹\s*)?(\d+(?:\.\d+)?)", salary_blob)
+    ]
+    if salary_numbers and _has_any(salary_blob, ["lpa", "lac", "lakh"]):
+        low, high = min(salary_numbers), max(salary_numbers)
+        if low >= 8 and high <= 16:
+            score += 6
+            reasons.append("Stated compensation is inside the preferred 8-16 LPA target range.")
+        elif high >= 8 and low < 8:
+            score += 2
+            reasons.append("Stated compensation overlaps the 8+ LPA target.")
 
     # A title-only security match should never become a HIGH_PRIORITY job.
     if role_hits and not verified_groups and not related_groups:

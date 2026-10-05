@@ -12,6 +12,7 @@ import re
 import time
 import subprocess
 from dataclasses import dataclass, asdict
+from difflib import SequenceMatcher
 from pathlib import Path
 from urllib.parse import quote_plus, urlparse
 
@@ -425,7 +426,17 @@ class NaukriAgent:
         return False
 
     def ensure_logged_in(self, interactive: bool = True):
-        self.open_home(interactive=interactive)
+        # Reuse the current authenticated Naukri page when possible. Repeated
+        # SPA homepage navigations during a multi-search scan can leave the CDP
+        # session waiting even though the search controls are already mounted.
+        current = (self.page.url or "").lower()
+        if "naukri.com" not in current:
+            self.open_home(interactive=interactive)
+        elif self.needs_human_verification():
+            self._human_blocker(
+                "Naukri presented a CAPTCHA/security verification",
+                interactive=interactive,
+            )
         if self.is_logged_in():
             return
 
@@ -739,6 +750,329 @@ class NaukriAgent:
         except Exception:
             return []
 
+    @staticmethod
+    def _autocomplete_similarity(query: str, candidate: str, lane: str = "role") -> float:
+        """Rank a live Naukri suggestion against the requested role/location."""
+        q_raw = query.casefold().strip()
+        c_raw = candidate.casefold().strip()
+        q = re.sub(r"\bl(\d)\b", r"\1", q_raw)
+        c = re.sub(r"\bl(\d)\b", r"\1", c_raw)
+        q = re.sub(r"[^a-z0-9]+", " ", q).strip()
+        c = re.sub(r"[^a-z0-9]+", " ", c).strip()
+        if not q or not c:
+            return 0.0
+
+        q_tokens = q.split()
+        c_tokens = c.split()
+        q_set = set(q_tokens)
+        c_set = set(c_tokens)
+
+        # Canonical location aliases Naukri uses in autocomplete.
+        location_aliases = {
+            "bangalore": {"bangalore", "bengaluru"},
+            "bengaluru": {"bangalore", "bengaluru"},
+            "gurgaon": {"gurgaon", "gurugram"},
+            "gurugram": {"gurgaon", "gurugram"},
+            "secunderabad": {"secunderabad", "hyderabad"},
+            "delhi ncr": {"delhi", "ncr"},
+            "remote": {"remote"},
+        }
+        if lane == "location":
+            q_location = q.replace("/", " ").strip()
+            if q_location in location_aliases:
+                aliases = location_aliases[q_location]
+                if c_set.issubset(aliases) or c_set.intersection(aliases):
+                    score = 0.94 if c_set.issubset(aliases) else 0.82
+                else:
+                    score = 0.0
+            else:
+                overlap = sum(1 for token in q_tokens if token in c_set)
+                coverage = overlap / max(1, len(q_set))
+                score = 0.62 * coverage + 0.28 * SequenceMatcher(None, q, c).ratio()
+            # Do not select geographic expansions such as Bangalore Rural when
+            # the user asked for the city itself.
+            qualifiers = {"rural", "greater", "suburban", "district", "industrial", "area"}
+            if c_set.intersection(qualifiers):
+                score -= 0.28
+            if q_set.intersection({"bangalore", "bengaluru"}) and "bengaluru" in c_set:
+                score += 0.10
+            if q_set.intersection({"gurgaon", "gurugram"}) and "gurugram" in c_set:
+                score += 0.10
+            return max(0.0, min(1.0, score))
+
+        if q == c:
+            return 1.0
+
+        overlap = sum(1 for token in q_tokens if token in c_set)
+        coverage = overlap / max(1, len(q_set))
+        extra_penalty = max(0, len(c_set) - len(q_set))
+        sequence = SequenceMatcher(None, q, c).ratio()
+        score = 0.54 * coverage + 0.30 * sequence - 0.03 * extra_penalty
+
+        role_suffixes = {
+            "engineer": {"engineer", "engineering"},
+            "analyst": {"analyst", "analysis"},
+            "specialist": {"specialist"},
+            "administrator": {"administrator", "admin"},
+            "manager": {"manager", "management"},
+            "management": {"management", "manager"},
+            "consultant": {"consultant"},
+            "developer": {"developer"},
+            "architect": {"architect"},
+        }
+        title_tokens = set().union(*role_suffixes.values())
+
+        if lane == "role" and q_tokens:
+            requested_suffix = q_tokens[-1]
+            requested_suffix_set = role_suffixes.get(requested_suffix, set())
+            candidate_role_tokens = c_set.intersection(title_tokens)
+
+            if requested_suffix_set:
+                if candidate_role_tokens.intersection(requested_suffix_set):
+                    score += 0.30
+                elif candidate_role_tokens:
+                    # A different real designation is preferable to a skill noun,
+                    # but still below a designation with the requested suffix.
+                    score += 0.06
+                    score -= 0.07
+                else:
+                    score -= 0.08
+
+            # Prefer exact security-product terms over misleading near-spellings.
+            brand_terms = {"qualys", "okta", "cloudflare", "netskope", "mimecast"}
+            for brand in brand_terms:
+                if brand in q_set:
+                    if brand in c_set:
+                        # Exact product-name suggestions beat lexical neighbors such
+                        # as Quality for Qualys or generic companies for Okta.
+                        score += 0.42
+                    else:
+                        score -= 0.16
+
+            # Support/tools/developer suggestions are weaker when the requested
+            # role did not ask for them.
+            if "support" in c_set and "support" not in q_set:
+                score -= 0.14
+            if "tools" in c_set and "tools" not in q_set:
+                score -= 0.14
+            if "developer" in c_set and "developer" not in q_set:
+                score -= 0.16
+            if "security" in q_set and "security" in c_set:
+                score += 0.08
+
+            # For engineering targets, an actual security designation (Analyst,
+            # Engineer, Specialist, etc.) is preferable to a bare skill noun.
+            if lane == "role" and q_tokens and q_tokens[-1] == "engineer":
+                if "analyst" in c_set and "engineer" not in c_set:
+                    score += 0.04
+                if "management" in c_set and "analyst" not in c_set and "engineer" not in c_set:
+                    score -= 0.02
+
+        return max(0.0, min(1.0, score))
+
+    def _autocomplete_items(self):
+        """Return visible autocomplete items from the active Naukri search field."""
+        selectors = [
+            'div.nI-gNb-sugg .tuple-wrap .opt[title]',
+            'div.nI-gNb-sugg [role="option"]',
+            '[role="listbox"] [role="option"]',
+        ]
+        seen = set()
+        items = []
+        for selector in selectors:
+            try:
+                loc = self.page.locator(selector)
+                for i in range(min(loc.count(), 40)):
+                    item = loc.nth(i)
+                    if not item.is_visible() or not item.is_enabled():
+                        continue
+                    value = self._clean_text(item.get_attribute("title") or item.inner_text())
+                    if not value or value.casefold() in seen:
+                        continue
+                    seen.add(value.casefold())
+                    items.append((value, item))
+            except Exception:
+                continue
+        return items
+
+    def _select_best_autocomplete(self, requested: str, lane: str = "role") -> tuple[str | None, list[str]]:
+        """Select the most relevant live Naukri autocomplete suggestion."""
+        target = self._normalize_role_phrase(requested)
+        candidates = self._autocomplete_items()
+        if not candidates:
+            return None, []
+
+        ranked = sorted(
+            candidates,
+            key=lambda pair: self._autocomplete_similarity(requested, pair[0], lane=lane),
+            reverse=True,
+        )
+        suggestions = [value for value, _ in ranked[:8]]
+        selected_value, selected_item = ranked[0]
+        score = self._autocomplete_similarity(requested, selected_value, lane=lane)
+
+        # Do not accept a completely unrelated company/person suggestion. For a
+        # role query require at least one meaningful token overlap; skill/location
+        # lanes can use a broader threshold because their terms are often shorter.
+        if lane == "role":
+            q_tokens = set(target.split())
+            c_tokens = set(self._normalize_role_phrase(selected_value).split())
+            if not q_tokens.intersection(c_tokens) or score < 0.34:
+                return None, suggestions
+
+        try:
+            selected_item.click(timeout=2500)
+            self.page.wait_for_timeout(250)
+            return selected_value, suggestions
+        except Exception:
+            return None, suggestions
+
+    def _append_comma_delimiter(self, field) -> None:
+        """Append a comma after an autocomplete-selected text value when Naukri keeps it in the input."""
+        try:
+            value = (field.input_value() or "").rstrip()
+            if value and not value.endswith(","):
+                field.press("End")
+                field.type(", ")
+        except Exception:
+            # Some Naukri builds convert the selected value into a chip and clear
+            # the input. In that UI there is no delimiter to type; the chip itself
+            # is the committed selection.
+            pass
+
+    def _build_autocomplete_field(self, field, values: list[str], lane: str) -> list[dict]:
+        """Type each requested value, inspect suggestions, select best match, and delimit."""
+        report = []
+        for index, requested in enumerate(values, start=1):
+            field.fill(requested)
+            self.page.wait_for_timeout(750)
+            selected, suggestions = self._select_best_autocomplete(requested, lane=lane)
+            entry = {
+                "index": index,
+                "requested": requested,
+                "suggestions": suggestions,
+                "selected": selected,
+                "status": "SELECTED" if selected else "NO_RELEVANT_SUGGESTION",
+            }
+            report.append(entry)
+            print(
+                f"[search-builder] {lane} {index}/{len(values)} requested={requested!r} "
+                f"suggestions={suggestions[:6]!r} selected={selected!r}",
+                flush=True,
+            )
+            if selected:
+                self._append_comma_delimiter(field)
+            else:
+                # Keep the original text so the user gets the requested search
+                # term even when Naukri provides no useful autocomplete match.
+                try:
+                    field.fill(requested)
+                    self._append_comma_delimiter(field)
+                except Exception:
+                    pass
+        return report
+
+    def _collect_autocomplete_mappings(
+        self,
+        values: list[str],
+        lane: str,
+        ensure_shell: bool = True,
+    ) -> list[dict]:
+        """Check each target independently and record the best Naukri suggestion."""
+        if ensure_shell and not self._fill_search_shell():
+            raise RuntimeError(f"Could not open Naukri search shell for {lane} autocomplete discovery.")
+        field_selector = (
+            'input[placeholder="Enter keyword / designation / companies"]'
+            if lane == "role"
+            else 'input[placeholder="Enter location"]'
+        )
+        field = self._first_visible_editable([field_selector])
+        if not field:
+            raise RuntimeError(f"Naukri {lane} search field is unavailable.")
+
+        report = []
+        for index, requested in enumerate(values, start=1):
+            field.fill("")
+            field.fill(requested)
+            self.page.wait_for_timeout(800)
+            selected, suggestions = self._select_best_autocomplete(requested, lane=lane)
+            report.append({
+                "index": index,
+                "requested": requested,
+                "suggestions": suggestions,
+                "selected": selected,
+                "status": "SELECTED" if selected else "NO_RELEVANT_SUGGESTION",
+            })
+            print(
+                f"[autocomplete] {lane} {index}/{len(values)} requested={requested!r} "
+                f"suggestions={suggestions[:6]!r} selected={selected!r}",
+                flush=True,
+            )
+            # Reset the input before the next independent check. This is critical:
+            # Naukri's suggestion service searches the current term, not a prior
+            # comma-separated list.
+            try:
+                field.fill("")
+            except Exception:
+                pass
+        return report
+
+    def _build_target_search_form(self) -> dict:
+        """Build/search diagnostics without relying on unsupported comma semantics."""
+        if not self._fill_search_shell():
+            raise RuntimeError("Could not open the Naukri search form.")
+
+        keyword = self._first_visible_editable([
+            'input[placeholder="Enter keyword / designation / companies"]'
+        ])
+        experience = self._first_visible_editable([
+            'input[placeholder="Select experience"]'
+        ])
+        location = self._first_visible_editable([
+            'input[placeholder="Enter location"]'
+        ])
+        if not keyword or not experience or not location:
+            raise RuntimeError("Naukri search controls are not available.")
+
+        print("[search-builder] building 30 role terms", flush=True)
+        role_report = self._build_autocomplete_field(keyword, DEFAULT_QUERIES, lane="role")
+
+        print("[search-builder] selecting experience=2 years", flush=True)
+        if not self._select_two_years(experience):
+            raise RuntimeError("Could not select/verify Naukri experience = 2 years.")
+
+        print(f"[search-builder] building {len(PREFERRED_LOCATIONS)} location terms", flush=True)
+        location_report = self._build_autocomplete_field(location, PREFERRED_LOCATIONS, lane="location")
+
+        # The last delimiter is unnecessary at submit time and can confuse some
+        # Naukri builds. Remove it only from a plain input; chips are left alone.
+        for field in (keyword, location):
+            try:
+                value = (field.input_value() or "")
+                if value.endswith(", "):
+                    field.fill(value[:-2])
+            except Exception:
+                pass
+
+        return {
+            "roles": role_report,
+            "experience": SEARCH_EXPERIENCE,
+            "locations": location_report,
+            "selected_roles": [x["selected"] for x in role_report if x["selected"]],
+            "selected_locations": [x["selected"] for x in location_report if x["selected"]],
+        }
+
+    def _fill_search_shell(self) -> bool:
+        """Open the authenticated Naukri header search without filling values."""
+        try:
+            current = (self.page.url or "").lower()
+            if "naukri.com/mnjuser/homepage" not in current:
+                self.page.goto(NAUKRI_HOME, wait_until="domcontentloaded", timeout=15000)
+                self.page.wait_for_timeout(1200)
+            return self.activate_header_search()
+        except Exception:
+            return False
+
     def _select_exact_keyword_suggestion(self, query: str) -> bool:
         """Require Naukri to recognize the exact role phrase before searching."""
         target = re.sub(r"\s+", " ", query).strip().casefold()
@@ -806,26 +1140,40 @@ class NaukriAgent:
         except Exception:
             return False, []
 
+    def _select_two_years(self, experience_field) -> bool:
+        """Use the live Naukri dropdown to select exactly 2 years."""
+        if experience_field is None:
+            return False
+        try:
+            experience_field.evaluate("(e) => e.click()")
+            self.page.wait_for_timeout(500)
+            option = self.page.get_by_text("2 years", exact=True).first
+            if not option.is_visible() or not option.is_enabled():
+                return False
+            option.click(timeout=2500)
+            self.page.wait_for_timeout(300)
+            value = re.sub(r"\s+", " ", (experience_field.input_value() or "").strip())
+            return "fresher" not in value.lower()
+        except Exception:
+            return False
+
     def _fill_search_form(
         self,
         query: str,
         location: str,
         validate_role: bool = True,
     ) -> bool:
-        # is_logged_in() intentionally checks the authenticated profile route.
-        # Always return to the Naukri homepage before interacting with the header
-        # search form; otherwise the live regression can start on /mnjuser/profile,
-        # where the current search controls are not guaranteed to be mounted.
+        # The live authenticated homepage mounts the search form when its
+        # expand button is clicked. Keep this path deliberately simple.
         try:
-            self.page.goto(NAUKRI_HOME, wait_until="domcontentloaded", timeout=15000)
-            self.page.wait_for_timeout(1200)
+            current = (self.page.url or "").lower()
+            if "naukri.com/mnjuser/homepage" not in current:
+                self.page.goto(NAUKRI_HOME, wait_until="domcontentloaded", timeout=15000)
+                self.page.wait_for_timeout(1200)
+            self.activate_header_search()
+            self.page.wait_for_timeout(500)
         except Exception:
             return False
-
-        # Current authenticated Naukri homepage: expand "Search jobs here",
-        # then fill the three visible search controls reported by inspect-search.
-        self.activate_header_search()
-        self.page.wait_for_timeout(500)
 
         try:
             keyword = self.page.locator(
@@ -875,7 +1223,14 @@ class NaukriAgent:
 
         self._last_role_recognized = None
         self._autocomplete_available = None
+        experience_selected = False
         try:
+            # Set the experience filter before typing the long combined role query
+            # so Naukri's keyword autocomplete cannot interfere with the dropdown.
+            experience_selected = self._select_two_years(experience_field)
+            if not experience_selected:
+                raise RuntimeError("Could not select/verify Naukri experience = 2 years.")
+
             keyword.fill(query)
             self.page.wait_for_timeout(1000)
 
@@ -903,7 +1258,7 @@ class NaukriAgent:
             # Select 2 years in the current Naukri experience control.
             # Naukri renders this control as a dropdown; do not fall back to
             # typing/pressing Enter because that can select "Fresher".
-            if experience_field:
+            if experience_field and not experience_selected:
                 # The live dropdown input can be visually unstable during the
                 # header animation. Trigger its React handler directly first.
                 try:
@@ -1643,75 +1998,120 @@ class NaukriAgent:
 
         return added
 
-    def scan_default(self, max_queries: int = 30, per_query: int = 12) -> list[FoundJob]:
-        """Discover jobs from recognized designations plus security skill keywords."""
-        roles = DEFAULT_QUERIES[:max_queries]
-        combined_location = ", ".join(PREFERRED_LOCATIONS)
-        all_found: list[FoundJob] = []
-        seen = set()
+    def scan_default(self, max_queries: int = 30, per_query: int = 20) -> list[FoundJob]:
+        """Check all role/location autocomplete, then run one real broad search.
 
-        def collect(found_jobs: list[FoundJob], source: str):
-            selected = 0
-            for job in found_jobs[:per_query]:
-                key = job.url.split("?")[0]
-                if key in seen:
-                    continue
-                seen.add(key)
-                all_found.append(job)
-                selected += 1
-            print(
-                f"[scan] {source} results={len(found_jobs)} selected={selected} total_unique={len(all_found)}",
-                flush=True,
+        Each role and location is entered independently so Naukri's autocomplete
+        can contribute its canonical wording. The selected values are recorded for
+        auditability, but they are not joined into a single comma query because
+        Naukri's backend treats comma-separated values as literal text. The actual
+        job retrieval uses one broad ``Security`` search with 2 years and no
+        location constraint; ingest() then applies the approved location list,
+        experience, CTC, JD, resume-skill matching, scoring, and dedupe locally.
+        """
+        del max_queries
+        del per_query
+
+        print(f"[scan] AUTOCOMPLETE_ROLES={len(DEFAULT_QUERIES)}", flush=True)
+        print(f"[scan] AUTOCOMPLETE_LOCATIONS={len(PREFERRED_LOCATIONS)}", flush=True)
+
+        try:
+            # Open the search shell once and keep that exact live form mounted.
+            if not self._fill_search_shell():
+                raise RuntimeError("Could not open Naukri search shell for autocomplete discovery.")
+
+            keyword = self._first_visible_editable([
+                'input[placeholder="Enter keyword / designation / companies"]'
+            ])
+            experience = self._first_visible_editable([
+                'input[placeholder="Select experience"]'
+            ])
+            location = self._first_visible_editable([
+                'input[placeholder="Enter location"]'
+            ])
+            if not keyword or not experience or not location:
+                raise RuntimeError("Naukri search controls are unavailable.")
+
+            # 1) Check every role independently against autocomplete.
+            role_report = self._collect_autocomplete_mappings(
+                DEFAULT_QUERIES,
+                "role",
+                ensure_shell=False,
             )
 
-        print(f"[scan] role_checks={len(roles)}", flush=True)
-        print(f"[scan] skill_checks={len(SKILL_QUERIES)}", flush=True)
-        print(f"[scan] locations={combined_location!r}", flush=True)
+            # 2) Set the requested 2-year experience filter.
+            print("[search-builder] selecting experience=2 years", flush=True)
+            if not self._select_two_years(experience):
+                raise RuntimeError("Could not select/verify Naukri experience = 2 years.")
 
-        # A. Designation discovery: only search roles Naukri recognizes in its
-        # autocomplete. Variants can map a human-friendly group to a canonical
-        # Naukri designation (for example SOC Analyst L2/L3 -> SOC Analyst 2).
-        for index, role in enumerate(roles, start=1):
-            variants = ROLE_VARIANTS.get(role, [role])
-            for variant_index, search_role in enumerate(variants, start=1):
-                print(
-                    f"[scan] ROLE {index}/{len(roles)} variant {variant_index}/{len(variants)}: {search_role!r}",
-                    flush=True,
-                )
-                try:
-                    found_jobs = self.search(search_role, combined_location, interactive=False, validate_role=True)
-                except RoleNotRecognized:
-                    print(f"[scan] NOT_A_DESIGNATION: {search_role!r}", flush=True)
-                    continue
-                except AutocompleteUnavailable:
-                    print(f"[scan] AUTOCOMPLETE_UNAVAILABLE: {search_role!r}", flush=True)
-                    continue
-                except HumanActionRequired:
-                    print(f"[scan] SKIP_VERIFICATION: {search_role!r}", flush=True)
-                    continue
-                except RuntimeError as exc:
-                    print(f"[scan] SEARCH_ERROR: {search_role!r}: {exc}", flush=True)
-                    continue
-                collect(found_jobs, f"ROLE {search_role!r}")
+            # 3) Check every location independently against autocomplete.
+            location_report = self._collect_autocomplete_mappings(
+                PREFERRED_LOCATIONS,
+                "location",
+                ensure_shell=False,
+            )
 
-        # B. Skill/technology discovery: these are not required to be job titles.
-        # Naukri receives them as raw keywords and the resulting JDs are still
-        # subjected to the same full scoring, location, experience, salary,
-        # dedupe, and application gates.
-        for index, skill in enumerate(SKILL_QUERIES, start=1):
-            print(f"[scan] SKILL {index}/{len(SKILL_QUERIES)}: {skill!r}", flush=True)
+            report = {
+                "roles": role_report,
+                "locations": location_report,
+                "experience": SEARCH_EXPERIENCE,
+                "search_strategy": "broad Security search + local role/location/JD scoring",
+            }
             try:
-                found_jobs = self.search(skill, combined_location, interactive=False, validate_role=False)
-            except HumanActionRequired:
-                print(f"[scan] SKIP_VERIFICATION: skill {skill!r}", flush=True)
-                continue
-            except RuntimeError as exc:
-                print(f"[scan] SEARCH_ERROR: skill {skill!r}: {exc}", flush=True)
-                continue
-            collect(found_jobs, f"SKILL {skill!r}")
+                report_path = ARTIFACT_DIR / "latest_search_autocomplete_report.json"
+                report_path.write_text(
+                    json.dumps(report, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                print(f"[scan] AUTOCOMPLETE_REPORT={report_path}", flush=True)
+            except Exception:
+                pass
 
-        print(f"[scan] ingesting={len(all_found)} unique candidates from roles + skills", flush=True)
-        return self.ingest(all_found)
+            # 4) Final retrieval uses a Naukri-supported single keyword and no
+            # multi-location string. The approved location list is enforced from
+            # the authoritative detail-page location during ingest().
+            print(
+                f"[scan] BROAD_SEARCH query='Security' experience={SEARCH_EXPERIENCE!r} location='all India'",
+                flush=True,
+            )
+            keyword.fill("Security")
+            location.fill("")
+            self.page.wait_for_timeout(250)
+
+            buttons = self.page.locator("button.nI-gNb-sb__icon-wrapper")
+            clicked = False
+            for i in range(buttons.count()):
+                candidate = buttons.nth(i)
+                if candidate.is_visible() and candidate.is_enabled():
+                    candidate.evaluate("(e) => e.click()")
+                    clicked = True
+                    break
+            if not clicked:
+                raise RuntimeError("Could not click Naukri's Search button.")
+
+            self.page.wait_for_timeout(3500)
+            if self.needs_human_verification():
+                self._human_blocker(
+                    "Naukri presented CAPTCHA/security verification during broad search",
+                    interactive=False,
+                )
+            found_jobs = self._extract_jobs()
+
+        except HumanActionRequired:
+            print("[scan] SKIP_VERIFICATION: broad search", flush=True)
+            return []
+        except RuntimeError as exc:
+            print(f"[scan] SEARCH_ERROR: {exc}", flush=True)
+            return []
+
+        print(f"[scan] RESULT_POOL={len(found_jobs)} real job cards", flush=True)
+        print(
+            "[scan] FILTERING=role taxonomy + JD/resume skills + experience + CTC + preferred location + dedupe",
+            flush=True,
+        )
+        added = self.ingest(found_jobs)
+        print(f"[scan] FINAL_TARGETS={len(added)} after scoring/filtering", flush=True)
+        return added
 
     def _all_contexts(self):
         """Return the top page plus any live iframes used by Naukri's apply UI."""
