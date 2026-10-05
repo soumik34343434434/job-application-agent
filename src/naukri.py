@@ -81,7 +81,13 @@ PREFERRED_LOCATIONS = [
 SEARCH_EXPERIENCE = "2 years"
 
 EXTERNAL_HOST_MARKERS = ("naukri.com", "naukri.co.in")
-CAPTCHA_WORDS = ("captcha", "i am not a robot", "verify you are human", "security check", "unusual activity")
+CAPTCHA_WORDS = (
+    "captcha",
+    "recaptcha",
+    "i am not a robot",
+    "verify you are human",
+    "unusual activity",
+)
 LOGIN_WORDS = ("login", "sign in", "log in")
 
 class HumanActionRequired(RuntimeError):
@@ -312,7 +318,14 @@ class NaukriAgent:
 
 
     def open_home(self):
-        self.page.goto(NAUKRI_HOME, wait_until="domcontentloaded")
+        try:
+            self.page.goto(NAUKRI_HOME, wait_until="domcontentloaded", timeout=15000)
+        except Exception as exc:
+            # Naukri occasionally aborts a homepage navigation while its
+            # authenticated shell redirects/hydrates. If the browser is still
+            # on Naukri, treat that abort as a transient navigation race.
+            if "ERR_ABORTED" not in str(exc) or "naukri.com" not in (self.page.url or "").lower():
+                raise
         self.page.wait_for_timeout(1500)
         if self.needs_human_verification():
             self.wait_for_human("Naukri presented a CAPTCHA/security verification")
@@ -721,23 +734,15 @@ class NaukriAgent:
                 selected = False
                 target = re.compile(r"^2\s*years?$", re.I)
 
-                # Current Naukri renders the experience menu as plain <li>
-                # elements. Use the exact visible option instead of scanning
-                # generic divs, which can contain the entire dropdown and make
-                # the live browser path slow/brittle.
-                options = self.page.locator("li")
+                # Current Naukri renders the option text directly in a
+                # single visible span. Resolve the exact option first instead
+                # of scanning every <li> on the page.
                 try:
-                    for i in range(options.count()):
-                        candidate = options.nth(i)
-                        if not candidate.is_visible() or not candidate.is_enabled():
-                            continue
-                        option_text = re.sub(
-                            r"\s+",
-                            " ",
-                            (candidate.inner_text() or ""),
-                        ).strip()
-                        if target.fullmatch(option_text):
-                            candidate.click(timeout=3000)
+                    exact = self.page.get_by_text(target, exact=True)
+                    for i in range(min(exact.count(), 5)):
+                        candidate = exact.nth(i)
+                        if candidate.is_visible() and candidate.is_enabled():
+                            candidate.click(timeout=2500)
                             self.page.wait_for_timeout(300)
                             selected = True
                             break
@@ -879,12 +884,31 @@ class NaukriAgent:
                 continue
         return False
 
-    def search(self, query: str, location: str = "") -> list[FoundJob]:
+    def search(
+        self,
+        query: str,
+        location: str = "",
+        interactive: bool = True,
+    ) -> list[FoundJob]:
         self.ensure_logged_in()
-        self.page.goto(NAUKRI_HOME, wait_until="domcontentloaded")
+        try:
+            self.page.goto(NAUKRI_HOME, wait_until="domcontentloaded", timeout=15000)
+        except Exception as exc:
+            if "ERR_ABORTED" not in str(exc) or "naukri.com" not in (self.page.url or "").lower():
+                raise
         self.page.wait_for_timeout(1200)
 
         searched = self._fill_search_form(query, location)
+
+        if not searched:
+            # The authenticated header is hydrated asynchronously. Give the
+            # live page one bounded retry before failing the query.
+            try:
+                self.page.goto(NAUKRI_HOME, wait_until="domcontentloaded", timeout=15000)
+                self.page.wait_for_timeout(1800)
+            except Exception:
+                pass
+            searched = self._fill_search_form(query, location)
 
         if not searched:
             raise RuntimeError(
@@ -895,7 +919,10 @@ class NaukriAgent:
         self._set_relevance_sort()
 
         if self.needs_human_verification():
-            self.wait_for_human("Naukri presented CAPTCHA/security verification during search")
+            self._human_blocker(
+                "Naukri presented CAPTCHA/security verification during search",
+                interactive=interactive,
+            )
         return self._extract_jobs()
 
 
@@ -1047,7 +1074,11 @@ class NaukriAgent:
                             return nxt
         return ""
 
-    def _extract_job_detail(self, url: str) -> FoundJob | None:
+    def _extract_job_detail(
+        self,
+        url: str,
+        interactive: bool = True,
+    ) -> FoundJob | None:
         """Open one real Naukri listing and extract authoritative job-page data."""
         canonical = (url or "").split("?")[0]
         if not canonical:
@@ -1058,7 +1089,10 @@ class NaukriAgent:
             self.page.wait_for_timeout(1400)
 
             if self.needs_human_verification():
-                self.wait_for_human("Naukri presented CAPTCHA/security verification on a job detail page")
+                self._human_blocker(
+                    "Naukri presented CAPTCHA/security verification on a job detail page",
+                    interactive=interactive,
+                )
 
             page_url = self.page.url or canonical
             if "/nlogin/" in page_url.lower() or "/login" in page_url.lower():
@@ -1353,7 +1387,7 @@ class NaukriAgent:
                 continue
 
             try:
-                detail = self._extract_job_detail(canonical)
+                detail = self._extract_job_detail(canonical, interactive=False)
             except HumanActionRequired:
                 # A CAPTCHA/security gate on one listing should not stall a
                 # bulk discovery run. Application execution remains fail-safe
@@ -1412,23 +1446,30 @@ class NaukriAgent:
         all_found: list[FoundJob] = []
         seen = set()
         locations = PREFERRED_LOCATIONS[:4]
+        target_count = max(1, max_queries * per_query)
         for query in DEFAULT_QUERIES[:max_queries]:
             for location in locations:
+                print(f"[scan] query={query!r} location={location!r}", flush=True)
                 try:
-                    found_jobs = self.search(query, location)
+                    found_jobs = self.search(query, location, interactive=False)
                 except HumanActionRequired:
                     # Unattended discovery must not stall on a verification gate
                     # for one query/location. Skip that slice and keep scanning;
                     # direct application execution still stops safely for human action.
+                    print(f"[scan] skipped verification-gated slice: {query!r} / {location!r}", flush=True)
                     continue
-                for job in found_jobs:
+                selected = 0
+                for job in found_jobs[:per_query]:
                     if job.url not in seen:
                         seen.add(job.url)
                         all_found.append(job)
-                if len(all_found) >= max_queries * per_query:
+                        selected += 1
+                print(f"[scan] selected={selected} total_candidates={len(all_found)}/{target_count}", flush=True)
+                if len(all_found) >= target_count:
                     break
             if len(all_found) >= max_queries * per_query:
                 break
+        print(f"[scan] ingesting {len(all_found)} bounded candidates", flush=True)
         return self.ingest(all_found)
 
     def _all_contexts(self):

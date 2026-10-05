@@ -3,11 +3,11 @@
 This file is the visible audit trail for the Naukri agent build.
 
 ## Current cycle — 2026-10-05
-**Goal:** prove the complete Naukri workflow before enabling automatic applications.
+**Goal:** harden the complete Naukri workflow before enabling unattended daily applications.
 
-**Current status:** latest validation commit `665631ee59faf85384c6163d12a35f9918ecbdf7` is queued in GitHub Actions (run #37229667766).
+**Current status:** live local browser work is active on the authenticated dedicated Chrome profile. The latest local fixes are pushed to `main`.
 
-**Working on now:** live Naukri browser reliability + safe application-form handling.
+**Working on now:** bounded live discovery + safe application routing.
 
 ## What has been completed
 - Persistent dedicated Naukri Chrome over CDP.
@@ -18,25 +18,31 @@ This file is the visible audit trail for the Naukri agent build.
 - 10/day submission cap.
 - Sensitive eligibility/sponsorship/citizenship/clearance questions block automatic submission.
 - Required-field guard blocks submission when required fields remain unanswered.
-- Browser session/runtime data removed from GitHub.
-- CI concurrency added so stale runs are cancelled during rapid iteration.
+- Current Naukri collapsed-header search trigger hardened for the live `Search jobs here` button.
+- Experience selection hardened around the live `2 years` option.
+- External employer-hosted applications are classified as `EXTERNAL_APPLICATION` instead of selector failures.
+- Unattended discovery no longer blocks on a human-verification challenge for one query/listing.
+- Discovery is now bounded by `per_query` before expensive full-JD ingestion.
+- Live search has a bounded retry for the authenticated header/navigation race.
 
 ## Validation status
-- Normal test suite: passing in recent runs.
-- Public Naukri smoke probe: passing in recent runs.
-- Live Mac Naukri regression: **not yet fully passing**.
-- Discovery pipeline has previously reached: **search -> real job URLs -> full JD -> scoring**.
-- Application submission has **not** been declared production-ready yet.
+- Python source compilation: **passing locally**.
+- Live authenticated Naukri search: **passing**; real listing URLs returned.
+- Internal Naukri application-form path: **passing in prepare-only mode**; a real Apply form reached `READY_TO_SUBMIT`.
+- External application routing: **passing**; a real employer-hosted listing returned `EXTERNAL_APPLICATION`.
+- Submitted today during validation: **0**.
+- Real internal `85+` auto-submit with positive confirmation: **not yet proven**.
+- Daily unattended application scheduling: **not enabled**.
 
 ## Next gates
-1. Live Naukri search works consistently.
-2. Search -> listings -> full JD -> scoring passes.
-3. Application form filling works with verified data.
-4. Unknown/sensitive questions stop safely.
-5. Submission success is positively verified and recorded.
-6. Only then enable daily automation, capped at 10/day.
+1. Run a targeted internal Naukri application with a score of at least 85.
+2. Verify all required/common fields are populated correctly.
+3. Confirm no unknown/sensitive eligibility question is present.
+4. Submit once under the existing safety gates and positively detect the success state.
+5. Confirm the database records `SUBMITTED` and the 10/day cap remains enforced.
+6. Then enable unattended daily autopilot.
 
 ## Audit rule
-No automatic daily applications are enabled until every gate above passes.
+No daily unattended application scheduling is enabled until the internal submission + positive confirmation gate passes.
 
-The detailed GitHub Actions logs are the source for test execution. This file records the higher-level engineering progress and is updated during each work cycle.
+The detailed GitHub Actions logs remain the source for CI execution. This file records the higher-level engineering progress and is updated during each work cycle.
