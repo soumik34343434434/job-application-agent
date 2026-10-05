@@ -1,0 +1,104 @@
+name: Naukri Headed Session Diagnostic
+
+on:
+  push:
+    branches:
+      - fix/naukri-ci-headed-browser
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Playwright + Xvfb
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+
+      - name: Restore encrypted Naukri state
+        env:
+          NAUKRI_STATE_KEY: ${{ secrets.NAUKRI_STATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${NAUKRI_STATE_KEY}"
+          test -f runtime/naukri.storage-state.enc
+          mkdir -p runtime outbox/browser_artifacts
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000             -pass env:NAUKRI_STATE_KEY             -in runtime/naukri.storage-state.enc             -out runtime/naukri.storage-state.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          state = json.loads(Path("runtime/naukri.storage-state.json").read_text())
+          print("COOKIE_COUNT=", len(state.get("cookies", [])))
+          PY
+
+      - name: Probe headed Naukri session
+        env:
+          PYTHONPATH: .
+          NAUKRI_STORAGE_STATE_PATH: ${{ github.workspace }}/runtime/naukri.storage-state.json
+          NAUKRI_HEADLESS: "false"
+          DISPLAY: :99
+        run: |
+          set -euo pipefail
+          Xvfb :99 -screen 0 1920x1080x24 -ac >/tmp/naukri-xvfb.log 2>&1 &
+          xvfb_pid=$!
+          sleep 1
+          kill -0 "$xvfb_pid" 2>/dev/null
+
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from playwright.sync_api import sync_playwright
+          from src.naukri import NaukriAgent
+
+          state = os.environ["NAUKRI_STORAGE_STATE_PATH"]
+
+          with sync_playwright() as p:
+              browser = p.chromium.launch(headless=False)
+              context = browser.new_context(storage_state=state, accept_downloads=True)
+              page = context.new_page()
+              response = page.goto("https://www.naukri.com/", wait_until="domcontentloaded", timeout=20000)
+              page.wait_for_timeout(1500)
+              body = page.locator("body").inner_text(timeout=5000)
+
+              print("HTTP_STATUS=", response.status if response else None)
+              print("FINAL_URL=", page.url)
+              print("LOGIN_MARKER=", "login" in body.lower() or "sign in" in body.lower())
+              print("PROFILE_MARKER=", "my profile" in body.lower() or "view profile" in body.lower())
+              page.screenshot(path="outbox/browser_artifacts/headed-session.png", full_page=True)
+              browser.close()
+
+          with NaukriAgent(headless=False, slow_mo=0) as agent:
+              print("AGENT_AUTHENTICATED=", agent.is_logged_in())
+              agent.page.screenshot(
+                  path=str(Path("outbox/browser_artifacts/agent-auth-check.png")),
+                  full_page=True,
+              )
+          PY
+
+      - name: Remove plaintext state
+        if: always()
+        run: rm -f runtime/naukri.storage-state.json
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: naukri-headed-session-${{ github.run_id }}
+          path: outbox/browser_artifacts/
+          if-no-files-found: ignore
+          retention-days: 7
