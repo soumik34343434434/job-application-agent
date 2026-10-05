@@ -316,6 +316,10 @@ def cmd_naukri_scheduled_run(args):
         return
 
     auto_submit = bool(schedule.get("auto_submit", False))
+    if os.getenv("GITHUB_ACTIONS") and auto_submit:
+        # Second independent safety gate for unattended live submissions.
+        # The profile alone can never enable real submissions in CI.
+        auto_submit = os.getenv("UNATTENDED_LIVE_SUBMISSION", "").lower() == "true"
     results = []
     run_status = "COMPLETED"
     try:
