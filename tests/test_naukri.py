@@ -164,3 +164,77 @@ def test_apply_surface_unknown_never_clicks_unrecognized_control():
         assert agent._apply_surface_state() == "UNKNOWN"
         assert agent._safe_click_apply() is False
         browser.close()
+
+
+def test_naukri_password_login_fills_and_submits(monkeypatch):
+    from src import naukri as nk
+
+    class FakeLocator:
+        def __init__(self, text=""):
+            self.text = text
+            self.filled = None
+            self.clicked = False
+
+        def count(self):
+            return 1
+
+        def nth(self, index):
+            return self
+
+        @property
+        def first(self):
+            return self
+
+        def is_visible(self):
+            return True
+
+        def is_enabled(self):
+            return True
+
+        def fill(self, value):
+            self.filled = value
+
+        def scroll_into_view_if_needed(self):
+            pass
+
+        def click(self, timeout=None):
+            self.clicked = True
+
+    class FakePage:
+        def __init__(self):
+            self.url = "https://www.naukri.com/nlogin/login"
+            self.title = lambda: "Login"
+            self.username = FakeLocator()
+            self.password = FakeLocator()
+            self.submit = FakeLocator()
+
+        def goto(self, url, **kwargs):
+            self.url = url
+
+        def wait_for_timeout(self, ms):
+            pass
+
+        def locator(self, selector):
+            if "password" in selector.lower():
+                return self.password
+            if "submit" in selector.lower():
+                return self.submit
+            if "email" in selector.lower() or "username" in selector.lower() or "mobile" in selector.lower() or "type=\"text\"" in selector.lower():
+                return self.username
+            return FakeLocator()
+
+        def get_by_role(self, role, name=None):
+            if role == "button":
+                return self.submit
+            return FakeLocator()
+
+    agent = NaukriAgent(headless=True, slow_mo=0)
+    agent.page = FakePage()
+    monkeypatch.setattr(nk, "get_naukri_credentials", lambda: ("user@example.invalid", "test-password"))
+    monkeypatch.setattr(agent, "needs_human_verification", lambda: False)
+    monkeypatch.setattr(agent, "is_logged_in", lambda: True)
+
+    assert agent._login_with_password(interactive=False) is True
+    assert agent.page.username.filled == "user@example.invalid"
+    assert agent.page.password.filled == "test-password"
+    assert agent.page.submit.clicked is True
