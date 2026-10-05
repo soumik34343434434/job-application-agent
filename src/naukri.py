@@ -522,6 +522,11 @@ class NaukriAgent:
         # a usable Login control. Keep a legacy endpoint as a second fallback.
         if not login_opened:
             direct_urls = [
+                # Current Naukri/FastForward jobseeker login page exposes the
+                # standard Email ID/Username + Password form and avoids the
+                # login.naukri.com browser navigation that times out on the
+                # hosted runner.
+                "https://resume.naukri.com/mobile-login",
                 "https://www.naukri.com/nlogin/login",
                 "https://login.naukri.com/nLogin/Login.php",
             ]
