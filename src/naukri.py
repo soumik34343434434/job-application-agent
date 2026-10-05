@@ -954,10 +954,16 @@ class NaukriAgent:
             if href.startswith("/"):
                 href = "https://www.naukri.com" + href
 
-            host = urlparse(href).netloc.lower()
+            parsed_href = urlparse(href)
+            host = parsed_href.netloc.lower()
             if host and not self._host_is_naukri(host):
                 continue
-            if "/job-listings-" not in href.lower() and "/job-listings/" not in href.lower():
+            # Social-share anchors can contain a real job-listing URL inside
+            # their query string. Only the canonical path itself qualifies as
+            # a job listing; never let query parameters turn share links into
+            # false-positive jobs.
+            canonical_path = (parsed_href.path or "").lower()
+            if "/job-listings-" not in canonical_path and "/job-listings/" not in canonical_path:
                 continue
 
             key = href.split("?")[0]
