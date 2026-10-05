@@ -29,7 +29,7 @@ NAUKRI_STATE_KEY
 
 2. Export the authenticated Naukri session:
 
-```cd
+```bash
 cd /Users/sante/.job-application-agent-engineer/repo
 source /Users/sante/.job-application-agent-engineer/venv/bin/activate
 python3 -m src.cli naukri export-storage-state
