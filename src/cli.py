@@ -329,7 +329,12 @@ def cmd_naukri_scheduled_run(args):
             "mode": "AUTO_SUBMIT" if auto_submit else "DRY_RUN_PREPARE_ONLY",
             "limit": limit,
         }, indent=2), flush=True)
-        with NaukriAgent(headless=bool(os.getenv("GITHUB_ACTIONS")) or bool(os.getenv("NAUKRI_STORAGE_STATE_PATH")), slow_mo=args.slow_mo) as agent:
+        headless_env = os.getenv("NAUKRI_HEADLESS")
+        if headless_env is None:
+            headless = bool(os.getenv("GITHUB_ACTIONS")) or bool(os.getenv("NAUKRI_STORAGE_STATE_PATH"))
+        else:
+            headless = headless_env.strip().lower() in {"1", "true", "yes", "on"}
+        with NaukriAgent(headless=headless, slow_mo=args.slow_mo) as agent:
             jobs = agent.scan_default(max_queries=args.scan_queries, per_query=args.per_query)
             if getattr(agent, "_last_scan_error", None):
                 raise RuntimeError(f"Naukri scan failed: {agent._last_scan_error}")
