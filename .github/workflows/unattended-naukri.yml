@@ -1,9 +1,7 @@
 name: Unattended Naukri Agent
 
+# Scheduled execution disabled per user request. Manual runs remain available.
 on:
-  schedule:
-    # GitHub cron is UTC. 04:30 UTC = 10:00 IST.
-    - cron: "30 4 * * *"
   workflow_dispatch:
     inputs:
       force_run:
